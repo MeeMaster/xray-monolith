@@ -2,7 +2,7 @@
 
 How to change xray-monolith so that every weapon is an independent object: one base model, parts as separate models fitted at runtime, and a per-weapon record that rebuilds the gun on save and load. It builds on [WEAPON_MODELS.md](WEAPON_MODELS.md), [WEAPON_OBJECTS.md](WEAPON_OBJECTS.md) and the Part_bench mod (`../part_bench`, its `AGENTS.md` and `mw_*` scripts).
 
-Engine paths are relative to `xray-monolith/src/`. Status: **plan**. Nothing here is implemented. Sizes are estimates from reading the code.
+Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2). Sizes are estimates from reading the code.
 
 ---
 
@@ -276,6 +276,8 @@ bi.mTransform.mul_43(*parent, RES);     // child bone lands on its parent's orig
 With nothing playing, every bone gets the identity instead of its offset from its parent, so the bolt, magazine and anything mounted on them collapse onto `wpn_body`. The first-person copy never shows this, because `attachable_hud_item::anim_play` always plays a cycle and falls back to `idle`. A rigid model never shows it, because `CKinematics::BuildBoneMatrix` uses the bone's bind transform.
 
 **Fix (1a):** when channel 0 has no blends, use the bone's bind transform for that channel, exactly as the rigid path does. When other channels (additive ones) have blends, mix them on top of the bind key instead of the identity. About 15–30 lines. Bones driven by physics or callbacks set `callback_overwrite` and never reach this code, so ragdolls and IK are unaffected.
+
+**Implemented 2026-11-24** in `CKinematicsAnimated::BuildBoneMatrix` (`Layers/xrRender/SkeletonAnimated.cpp`), the per-frame path only. The two root-motion helpers that call `LL_BoneMatrixBuild` directly with their own key tables (`animation_movement_controller.cpp`, `imotion_position.cpp`) are unchanged. Console toggle `rs_skeleton_bind_fallback` (default 1; 0 restores the old behaviour for comparison). **Tested in game 2026-11-24** on plain Anomaly with `tests\bind_pose`: with 0 the bolt and magazine collapse onto the gun's origin, with 1 they stay in place.
 
 After 1a, an animated gun model with no motion playing shows its parts in their relative positions, on NPCs, on the ground and on the back. With the shared instance (7.3), the actor's gun in third person even shows the same animation as in first person.
 
