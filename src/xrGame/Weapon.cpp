@@ -17,6 +17,8 @@
 #include "xr_level_controller.h"
 #include "game_cl_base.h"
 #include "../Include/xrRender/Kinematics.h"
+#include "../Include/xrRender/KinematicsAnimated.h"
+#include "../Include/xrRender/animation_blend.h"
 #include "ai_object_location.h"
 #include "../xrphysics/mathutils.h"
 #include "object_broker.h"
@@ -610,6 +612,8 @@ void CWeapon::Load(LPCSTR section)
 {
 	inherited::Load(section);
 	CShootingObject::Load(section);
+
+	m_world_shot_motion = READ_IF_EXISTS(pSettings, r_string, section, "world_shot_motion", "shoot");
 
 	if (pSettings->line_exist(section, "flame_particles_2"))
 		m_sFlameParticles2 = pSettings->r_string(section, "flame_particles_2");
@@ -1323,6 +1327,7 @@ void CWeapon::shedule_Update(u32 dT)
 void CWeapon::OnH_B_Independent(bool just_before_destroy)
 {
 	RemoveShotEffector();
+	StopWorldMotion();
 
 	inherited::OnH_B_Independent(just_before_destroy);
 
@@ -1437,6 +1442,7 @@ void CWeapon::UpdateCL()
 {
 	inherited::UpdateCL();
 	UpdateHUDAddonsVisibility();
+	UpdateWorldMotion();
 	//ïîäñâåòêà îò âûñòðåëà
 	UpdateLight();
 
@@ -2091,6 +2097,111 @@ void CWeapon::UpdateAddonsVisibility()
 	ApplyAddonsVisibility(pWeaponVisual, false);
 	pWeaponVisual->CalculateBones_Invalidate();
 	pWeaponVisual->CalculateBones(TRUE);
+}
+
+// 1g (WEAPON_ENGINE_PLAN.md 7.5): a short motion on the world model when the gun fires outside
+// the first-person view, e.g. the bolt cycling in an NPC's hands. Plays only on a visible gun
+// within wpn_world_shot_motion_dist metres (0 turns it off), and only if the model has the
+// motion named by world_shot_motion (default "shoot"; empty turns it off for that gun).
+float ps_wpn_world_shot_motion_dist = 50.f;
+int ps_wpn_world_shot_motion_debug = 0;
+
+void CWeapon::PlayWorldShotMotion()
+{
+	// wpn_world_shot_motion_debug 1 logs why a shot plays no motion
+	auto skip = [this](LPCSTR why)
+	{
+		if (ps_wpn_world_shot_motion_debug)
+			Msg("[1g] %s (%s): no world shot motion, %s", cName().c_str(), cNameSect().c_str(), why);
+	};
+
+	if (ps_wpn_world_shot_motion_dist <= 0.f || !m_world_shot_motion.size())
+		return skip("turned off");
+	if (!H_Parent())
+		return skip("not held");
+	if (IsAttachedToHUD())
+		return skip("attached to the first-person view"); // the first-person motion already drives it (1b)
+
+	IKinematicsAnimated* ka = Visual() ? Visual()->dcast_PKinematicsAnimated() : nullptr;
+	if (!ka)
+		return skip("world model is not animated"); // vanilla world models are rigid
+	const MotionID mid = ka->ID_Cycle_Safe(m_world_shot_motion);
+	if (!mid.valid())
+		return skip(make_string("model has no motion [%s]", m_world_shot_motion.c_str()).c_str());
+
+	// The holder's bounds: a held item doesn't keep its own spatial sphere up to date
+	const CObject* root_obj = H_Root();
+	const Fsphere& S = root_obj->spatial.sphere;
+	if (Device.vCameraPosition.distance_to_sqr(Position()) > _sqr(ps_wpn_world_shot_motion_dist))
+		return skip("too far");
+	if (!::Render->ViewBase.testSphere_dirty(const_cast<Fvector&>(S.P), S.R))
+		return skip("holder outside the view");
+
+	// Pin the root like attachable_hud_item::anim_play, so first-person recoil in the motion
+	// doesn't move the gun out of the hands
+	IKinematics* K = ka->dcast_PKinematics();
+	CBoneInstance& root = K->LL_GetBoneInstance(K->LL_GetBoneRoot());
+	if (!root.callback())
+	{
+		root.set_callback_overwrite(TRUE);
+		root.mTransform.identity();
+		m_world_motion_root = true;
+	}
+
+	float length = 0.f;
+	const u16 pc = ka->partitions().count();
+	for (u16 pid = 0; pid < pc; ++pid)
+	{
+		CBlend* B = ka->LL_PlayCycle(pid, mid, FALSE, 0, 0);
+		if (B && B->speed > 0.f)
+			length = _max(length, B->timeTotal / B->speed);
+	}
+	K->CalculateBones_Invalidate();
+	m_world_motion_end = Device.dwTimeGlobal + iCeil(length * 1000.f) + 1;
+	if (ps_wpn_world_shot_motion_debug)
+		Msg("[1g] %s (%s): playing [%s], %.3f s on %u partition(s)", cName().c_str(), cNameSect().c_str(), m_world_shot_motion.c_str(), length, u32(pc));
+}
+
+void CWeapon::UpdateWorldMotion()
+{
+	if (!m_world_motion_end)
+		return;
+	if (Device.dwTimeGlobal >= m_world_motion_end || IsAttachedToHUD())
+	{
+		StopWorldMotion();
+		return;
+	}
+	if (IKinematicsAnimated* ka = Visual() ? Visual()->dcast_PKinematicsAnimated() : nullptr)
+		ka->UpdateTracks();
+}
+
+void CWeapon::StopWorldMotion()
+{
+	if (!m_world_motion_end)
+		return;
+	m_world_motion_end = 0;
+	const bool pinned = m_world_motion_root;
+	m_world_motion_root = false;
+
+	// A shared model now driven by the first-person view keeps its motions (1b)
+	if (IsAttachedToHUD() && HudSharesWorldVisual())
+		return;
+
+	IKinematicsAnimated* ka = Visual() ? Visual()->dcast_PKinematicsAnimated() : nullptr;
+	if (!ka)
+		return;
+	IKinematics* K = ka->dcast_PKinematics();
+	if (pinned)
+	{
+		CBoneInstance& root = K->LL_GetBoneInstance(K->LL_GetBoneRoot());
+		if (!root.callback())
+			root.set_callback_overwrite(FALSE);
+	}
+	// Back to the bind pose (1a)
+	const u16 pc = ka->partitions().count();
+	for (u16 pid = 0; pid < pc; ++pid)
+		ka->LL_CloseCycle(pid, u8(-1));
+	K->CalculateBones_Invalidate();
 }
 
 void CWeapon::InitAddons()

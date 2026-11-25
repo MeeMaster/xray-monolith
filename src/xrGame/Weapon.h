@@ -319,6 +319,15 @@ public:
 	void UpdateHUDAddonsVisibility();
 	// One rule for the addon bones, applied to each model instance (WEAPON_ENGINE_PLAN.md 7.3, 1d)
 	void ApplyAddonsVisibility(IKinematics* K, bool hud_copy);
+
+	// Short motion on the world model when an NPC (or anyone not using the first-person view) shoots
+	// (WEAPON_ENGINE_PLAN.md 7.5, 1g)
+	void PlayWorldShotMotion();
+	void UpdateWorldMotion();
+	void StopWorldMotion();
+	shared_str m_world_shot_motion;
+	u32 m_world_motion_end = 0; // Device.dwTimeGlobal when the motion ends, 0 when none plays
+	bool m_world_motion_root = false; // the motion pinned the root bone
 	//èíèöèàëèçàöèÿ ñâîéñòâ ïðèñîåäèíåííûõ àääîíîâ
 	virtual void InitAddons();
 

@@ -94,7 +94,22 @@ void __fastcall mapMatrix_Render(mapMatrixItems& N)
 }
 
 // ALPHA
+static void sorted_render(mapSorted_Node* N, float LOD);
+
+// Unchanged behaviour: the key of these nodes is the squared distance, not the SSA
 void __fastcall sorted_L1(mapSorted_Node* N)
+{
+	sorted_render(N, calcLOD(N->key, N->val.pVisual->vis.sphere.R));
+}
+
+// HUD buckets: the held gun is always drawn at full detail (WEAPON_ENGINE_PLAN.md 7.5, 1e). Its
+// model is also the world model (1b), whose distance LODs must not reach first person.
+void __fastcall sorted_L1_hud(mapSorted_Node* N)
+{
+	sorted_render(N, 1.f);
+}
+
+static void sorted_render(mapSorted_Node* N, float LOD)
 {
 	VERIFY(N);
 	dxRender_Visual* V = N->val.pVisual;
@@ -115,7 +130,7 @@ void __fastcall sorted_L1(mapSorted_Node* N)
     
 	RImplementation.apply_object(N->val.pObject);
 	RImplementation.apply_lmaterial();
-	V->Render(calcLOD(N->key, V->vis.sphere.R));
+	V->Render(LOD);
 
 	if (N->val.fov != 0.f)
 	{
@@ -653,10 +668,10 @@ void R_dsgraph_structure::r_dsgraph_render_hud(bool NoPS)
 	rmNear();
 	if (!NoPS)
 	{
-		mapHUD.traverseLR(sorted_L1);
+		mapHUD.traverseLR(sorted_L1_hud);
 		mapHUD.clear();
 
-		mapCustomFOV.traverseLR(sorted_L1);
+		mapCustomFOV.traverseLR(sorted_L1_hud);
 		mapCustomFOV.clear();
 
         if (mapCamAttached.size())
@@ -664,7 +679,7 @@ void R_dsgraph_structure::r_dsgraph_render_hud(bool NoPS)
             Device.mFullTransform = Device.mFullTransformCamAttached;
             RCache.set_xform_project(Device.mProjectCamAttached);
 
-            mapCamAttached.traverseLR(sorted_L1);
+            mapCamAttached.traverseLR(sorted_L1_hud);
             mapCamAttached.clear();
         }
 
@@ -679,14 +694,14 @@ void R_dsgraph_structure::r_dsgraph_render_hud(bool NoPS)
             Device.mFullTransform = Device.mFullTransformHud;
             RCache.set_xform_project(Device.mProjectHud);
 
-			mapScopeHUD.traverseLR(sorted_L1);
+			mapScopeHUD.traverseLR(sorted_L1_hud);
 
             if (mapScopeCamAttached.size())
             {
                 Device.mFullTransform = Device.mFullTransformCamAttached;
                 RCache.set_xform_project(Device.mProjectCamAttached);
 
-                mapScopeCamAttached.traverseLR(sorted_L1);
+                mapScopeCamAttached.traverseLR(sorted_L1_hud);
             }
 
 			if (!RImplementation.o.ssfx_motionvectors)
@@ -796,7 +811,7 @@ void R_dsgraph_structure::r_dsgraph_render_sorted()
 
 	// Rendering
 	rmNear();
-	mapHUDSorted.traverseRL(sorted_L1);
+	mapHUDSorted.traverseRL(sorted_L1_hud);
 	mapHUDSorted.clear();
 
 	// Camera Script Attachments
@@ -807,7 +822,7 @@ void R_dsgraph_structure::r_dsgraph_render_sorted()
 		RCache.set_xform_project(Device.mProjectCamAttached);
 
 		// Rendering
-		mapCamAttachedSorted.traverseRL(sorted_L1);
+		mapCamAttachedSorted.traverseRL(sorted_L1_hud);
 		mapCamAttachedSorted.clear();
 	}
 
@@ -831,7 +846,7 @@ void R_dsgraph_structure::r_dsgraph_render_ScopeSorted()  //  Redotix99: for 3D 
 
 	// Rendering
 	rmNear();
-	mapScopeHUDSorted.traverseRL(sorted_L1);
+	mapScopeHUDSorted.traverseRL(sorted_L1_hud);
 	mapScopeHUDSorted.clear();
 
     // Camera Script Attachments
@@ -842,7 +857,7 @@ void R_dsgraph_structure::r_dsgraph_render_ScopeSorted()  //  Redotix99: for 3D 
         RCache.set_xform_project(Device.mProjectCamAttached);
 
         // Rendering
-        mapScopeCamAttachedSorted.traverseLR(sorted_L1);
+        mapScopeCamAttachedSorted.traverseLR(sorted_L1_hud);
         mapScopeCamAttachedSorted.clear();
     }
 
@@ -877,13 +892,13 @@ void R_dsgraph_structure::r_dsgraph_render_emissive(bool clear, bool renderHUD)
 	// Rendering
 	rmNear();
 	// Sorted (back to front)
-	mapHUDEmissive.traverseLR(sorted_L1);
+	mapHUDEmissive.traverseLR(sorted_L1_hud);
 	
 	if (clear)
 		mapHUDEmissive.clear();
 
 	if (renderHUD)
-		mapHUDSorted.traverseRL(sorted_L1);
+		mapHUDSorted.traverseRL(sorted_L1_hud);
 
 	rmNormal();
 

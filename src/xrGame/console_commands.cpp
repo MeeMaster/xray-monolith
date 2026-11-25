@@ -176,6 +176,8 @@ extern BOOL g_freelook_while_reloading;
 extern BOOL useSeparateUBGLKeybind;
 extern int ps_hud_ik_compensation;
 extern int ps_hud_shared_model;
+extern float ps_wpn_world_shot_motion_dist;
+extern int ps_wpn_world_shot_motion_debug;
 extern int g_nearwall;
 extern int g_nearwall_trace;
 extern BOOL drawPickupItemNames;
@@ -2588,6 +2590,8 @@ void CCC_RegisterCommands()
 	CMD3(CCC_Mask, "hud_draw", &psHUD_Flags, HUD_DRAW);
 	CMD4(CCC_Integer, "hud_ik_compensation", &ps_hud_ik_compensation, 0, 1);
 	CMD4(CCC_Integer, "hud_shared_model", &ps_hud_shared_model, 0, 1);
+	CMD4(CCC_Float, "wpn_world_shot_motion_dist", &ps_wpn_world_shot_motion_dist, 0.f, 500.f);
+	CMD4(CCC_Integer, "wpn_world_shot_motion_debug", &ps_wpn_world_shot_motion_debug, 0, 1);
 
 	// hud
 	psHUD_Flags.set(HUD_CROSSHAIR, true);

@@ -2,7 +2,7 @@
 
 How to change xray-monolith so that every weapon is an independent object: one base model, parts as separate models fitted at runtime, and a per-weapon record that rebuilds the gun on save and load. It builds on [WEAPON_MODELS.md](WEAPON_MODELS.md), [WEAPON_OBJECTS.md](WEAPON_OBJECTS.md) and the Part_bench mod (`../part_bench`, its `AGENTS.md` and `mw_*` scripts).
 
-Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), and 1d implemented and partly tested in game (section 7.3). Sizes are estimates from reading the code.
+Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Sizes are estimates from reading the code.
 
 ---
 
@@ -391,17 +391,35 @@ Without SSS, nothing changes visually.
 | 1c | No `hud_loading` for weapons and parts; lens mask exclusion at draw time | `player_hud.cpp`, `level_script.cpp:1775`, `ResourceManager.cpp:263`, the HUD mask pass | S |
 | 1d | One bone-visibility function | `Weapon.cpp:2010`, `:2071` | S |
 | 1e | Force LOD0 in the HUD pass; world draws use progressive LOD | `r__dsgraph_build.cpp`, `rimp_select_sh_dynamic` | S |
-| 1f | Optional: tolerate bones that a motion file doesn't animate, so gun models can carry `mnt_*` bones (Part_bench spike 6 crashed on this) | `xrEngine/SkeletonMotions.cpp:120-150` and motion loading in `CKinematicsAnimated` | M, spike first |
+| 1f | **Skipped (decided 2026-11-25).** New gun models ship a motion file whose bone set matches the model exactly, `mnt_*` bones included, so no motion file leaves a bone without a track. Tracks match bones by name, and the bone-count check exists only in debug builds, so a mismatch crashes instead of reporting; the export pipeline should check it. LTX mount offsets stay supported for older content | — | — |
 | 1g | Optional: a short world motion (bolt cycle) on NPC shots if the model has it | `CWeaponMagazined` shot path | S |
 
 Notes:
 
 - **Do 1a first.** It is small, it can ship on its own, and it is what makes a single animated file usable in the world at all.
-- **1f changes a mesh convention.** Part_bench placed gun mounts as LTX offsets because a new bone broke the shared motion file. If 1f works, mounts can be bones in the gun model, which is easier to author. Both forms stay supported. Release builds skip the bone-count check (it is a `VERIFY3`), so the crash likely comes from later motion indexing. Spike it before committing.
+- **Mount bones without 1f.** Mounts can be bones in the gun model, as long as the gun's motion file is exported with the same bones (1f, skipped). Mounts as LTX offsets stay supported.
 - **Content requirement.** Each gun model is one animated file with bone shapes (for dropping), the motion reference (for first person), and ideally LODs. Part_bench's `wpn_ak74_n_one.ogf` from spike 8 is exactly this. `tools\ogf_hud_from_world.ps1` makes it from a world export.
 - **What the HUD view still needs from config:** the `hud` section's hand and item placement, motions and fire bones. Those describe placement in the hands, not a separate model.
 
 **Done when:** `wpn_ak74_n_one.ogf` from Part_bench spike 8 is the only model of its gun, and it looks right in first person, in third person (bolt and magazine in place), dropped, and in an NPC's hands. Test with SSS on and off. In first person with actor shadows on, the shadow and the held gun show the same pose.
+
+**Implemented 2026-11-25 (1e), built, not yet run in game.** What reading the code found:
+- **Mesh detail** comes from `calcLOD` (1 = full detail), which only progressive meshes use (`CSkeletonX_PM::Render`, `FProgressive`). Plain skinned meshes (`CSkeletonX_ST`) ignore it.
+- **The HUD buckets** draw through `sorted_L1`, which passes the node key, the squared *distance*, into `calcLOD` instead of the SSA. A closer object therefore gets less detail. At normal settings the held gun still lands on full detail, but at low resolution with a low `r__geometry_lod` it could drop.
+- **Change:** `sorted_L1_hud` (`Layers/xrRender/r__dsgraph_render.cpp`) always draws at full detail. It is used for every HUD-only bucket: `mapHUD`, `mapCustomFOV`, `mapCamAttached`, `mapScopeHUD`, `mapScopeCamAttached`, `mapHUDSorted`, `mapCamAttachedSorted`, `mapScopeHUDSorted`, `mapScopeCamAttachedSorted`, `mapHUDEmissive`.
+- **World draws need no change.** Opaque world draws already pick detail from the SSA (`mapNormal_Render`, `mapMatrix_Render`), and the shader quality from distance (`rimp_select_sh_dynamic`: HQ within `r_dtex_range`, so always HQ in first person).
+- **Left alone:** world sorted, emissive, wallmark and distort draws still feed the distance into `calcLOD`, which in practice means full detail. Switching them to the SSA is not safe, because the static strict-sort insert in `r__dsgraph_build.cpp` never sets `ssa`. Non-HUD custom-FOV maps also stay on `sorted_L1`.
+- **Content:** the test model `wpn_ak74_n_one.ogf` has 13 plain skinned meshes (type 5, `MT_SKELETON_GEOMDEF_ST`) and no LODs, so it can't show any of this. A gun only gets distance LODs once its export has progressive meshes (type 4).
+- **No LOD authoring (decided 2026-11-25).** Weapon mods such as Boomsticks and Sharpsticks ship no lower-detail meshes, so the plan doesn't count on them. NPC guns draw at full detail; if that proves too slow (section 17), the fallback is a distance cutoff for cosmetic parts, not LOD swaps.
+
+**Implemented 2026-11-25 (1g). Tested in game 2026-11-25:** an NPC firing the test gun plays `shoot` on every shot, and `mw_bp.watch()` shows the bolt moving (0.185 m at rest, down to 0.093 m mid-burst) and returning between bursts. The actor's own gun is skipped (first-person view), and so is a vanilla PKM (rigid world model). The visibility test uses the holder's spatial sphere: a held item never updates its own (`spatial.sphere`), so the first build rejected every shot as off screen. Console `wpn_world_shot_motion_debug 1` logs why each shot plays or not.
+- **When it plays.** `CWeaponMagazined::OnShot` calls `CWeapon::PlayWorldShotMotion` (`Weapon.cpp`). It plays only when all of these hold:
+  - the gun is held and not attached to the first-person view (an NPC's gun; the actor's shared model already plays the first-person motion in third person, 1b);
+  - the world model is animated and has the motion named by `world_shot_motion` in the weapon section (default `shoot`, the name Boomsticks and Sharpsticks uses; an empty value turns it off for that gun);
+  - the gun is within `wpn_world_shot_motion_dist` metres of the camera (console, default 50; 0 turns it off everywhere) and inside the view frustum.
+- **How.** It plays the motion on every partition without mixing, so each shot restarts it, and pins the root bone to identity like `attachable_hud_item::anim_play`, so recoil in a first-person motion doesn't pull the gun out of the hands. `CWeapon::UpdateCL` advances the tracks while it plays. When the motion ends, or the gun is dropped (`OnH_B_Independent`) or taken into first person, `StopWorldMotion` closes the cycles, which returns the model to the bind pose (1a), and releases the root. On a shared model that the first-person view has taken over, it leaves the motions alone.
+- **Cost.** Bone matrices of a visible animated model are rebuilt every frame anyway. A playing motion turns each bone's bind-pose copy into a keyframe sample, for about 0.1 s per shot. Offscreen and distant guns skip it.
+- **Test:** `mw_bp.npc_give()` the test gun, get the NPC into a fight, aim at them and run `mw_bp.watch()`. The bolt offset should change with each shot and return to 0.185 between bursts.
 
 ---
 

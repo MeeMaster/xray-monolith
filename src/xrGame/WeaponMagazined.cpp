@@ -903,6 +903,7 @@ void CWeaponMagazined::OnShot()
 
 	// Animation
 	PlayAnimShoot();
+	PlayWorldShotMotion();
 
 	// Update bullets
 	HUD_VisualBulletUpdate();
