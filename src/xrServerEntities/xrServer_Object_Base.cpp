@@ -12,6 +12,7 @@
 #include "game_base_space.h"
 #include "script_value_container_impl.h"
 #include "clsid_game.h"
+#include "xrServer_Objects_ALife_Items.h"
 
 #pragma warning(push)
 #pragma warning(disable:4995)
@@ -248,6 +249,11 @@ void CSE_Abstract::Spawn_Write(NET_Packet& tNetPacket, BOOL bLocal)
 	u32 position = tNetPacket.w_tell();
 	tNetPacket.w_u16(0);
 	STATE_Write(tNetPacket);
+	// Version 129: an inventory item's instance record follows its state, inside the frame. It is written here,
+	// not in STATE_Write, so the packets scripts build with STATE_Write/STATE_Read stay as they were.
+	if (!tNetPacket.inistream)
+		if (const CSE_ALifeInventoryItem* item = cast_inventory_item())
+			item->m_instance.write(tNetPacket);
 	u16 size = u16(tNetPacket.w_tell() - position);
 	//#ifdef XRSE_FACTORY_EXPORTS
 	R_ASSERT3((m_tClassID == CLSID_SPECTATOR) || (size > sizeof(size)),
@@ -363,12 +369,33 @@ BOOL CSE_Abstract::Spawn_Read(NET_Packet& tNetPacket)
 		}
 	}
 
+	const u32 frame_start = tNetPacket.r_pos;
 	u16 size;
 	tNetPacket.r_u16(size); // size
 	bool b1 = (m_tClassID == CLSID_SPECTATOR);
 	bool b2 = (size > sizeof(size)) || (tNetPacket.inistream != NULL);
 	R_ASSERT3((b1 || b2), "cannot read object, which is not successfully saved :(", name_replace());
 	STATE_Read(tNetPacket, size);
+
+	// Version 129: an inventory item's instance record follows its state (see Spawn_Write). Older versions and
+	// packets without the bytes leave the record empty. The frame end is restored either way, so a record that
+	// is damaged or from a newer build can never shift what is read after the frame.
+	if (CSE_ALifeInventoryItem* item = cast_inventory_item())
+	{
+		item->m_instance.clear();
+		if (m_wVersion > 128 && !tNetPacket.inistream)
+		{
+			const u32 frame_end = frame_start + size;
+			if (tNetPacket.r_pos < frame_end && frame_end <= tNetPacket.B.count)
+			{
+				NET_Packet record;
+				record.construct(&tNetPacket.B.data[tNetPacket.r_pos], frame_end - tNetPacket.r_pos);
+				record.r_pos = 0;
+				item->m_instance.read(record);
+				tNetPacket.r_pos = frame_end;
+			}
+		}
+	}
 	return TRUE;
 }
 

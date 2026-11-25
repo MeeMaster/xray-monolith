@@ -312,6 +312,17 @@ public:
 	virtual CWeaponAmmo* cast_weapon_ammo() { return 0; }
 	virtual CGameObject* cast_game_object() { return 0; }
 
+	////////// instance record //////////////////////////////////////////////
+	// Game-side copy of the server entity's record (WEAPON_ENGINE_PLAN.md 4.3, change 2c). Filled from the
+	// server entity in net_Spawn; every change goes to the server as a whole record (GE_INSTANCE_RECORD).
+protected:
+	CSE_InstanceRecord m_instance;
+
+public:
+	const CSE_InstanceRecord& instance_record() const { return m_instance; }
+	// Replaces the record here and on the server. False for a record from a newer build, which is read-only.
+	bool set_instance_record(const CSE_InstanceRecord& record);
+
 	////////// upgrades //////////////////////////////////////////////////
 public:
 	typedef xr_vector<shared_str> Upgrades_type;

@@ -1,4 +1,5 @@
 #include "pch_script.h"
+#include "InstanceRecord.h"
 #include "../xrEngine/xr_ioconsole.h"
 #include "../xrEngine/xr_ioc_cmd.h"
 #include "../xrEngine/customhud.h"
@@ -415,6 +416,14 @@ static void full_memory_stats()
 	dump_file_mappings();
 #endif // DEBUG
 }
+
+// Round trip and robustness checks for the per-item record (WEAPON_ENGINE_PLAN.md 4.1, 2a)
+class CCC_InstanceRecordTest : public IConsole_Command
+{
+public:
+	CCC_InstanceRecordTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args) { CSE_InstanceRecord::self_test(); }
+};
 
 class CCC_MemStats : public IConsole_Command
 {
@@ -2532,6 +2541,89 @@ public:
     }
 };
 
+// Debug access to the instance record (WEAPON_ENGINE_PLAN.md 4.1-4.3, changes 2a-2c) of the actor's active
+// item. instance_record_set edits the game-side copy and sends it to the server (GE_INSTANCE_RECORD);
+// instance_record_dump shows both copies and whether they match.
+#include "alife_object_registry.h"
+#include "../xrServerEntities/xrServer_Objects_ALife_Items.h"
+
+static PIItem active_item()
+{
+	if (!g_pGameLevel || !Actor() || !ai().get_alife())
+	{
+		Msg("! [instance record] needs a loaded single player game");
+		return nullptr;
+	}
+	PIItem item = Actor()->inventory().ActiveItem();
+	if (!item)
+		Msg("! [instance record] no item in hands");
+	return item;
+}
+
+static CSE_ALifeInventoryItem* server_entity(PIItem item)
+{
+	CSE_ALifeDynamicObject* se = ai().alife().objects().object(item->object().ID(), true);
+	return se ? smart_cast<CSE_ALifeInventoryItem*>(se) : nullptr;
+}
+
+static void dump_record(LPCSTR side, const CSE_InstanceRecord& r)
+{
+	Msg("- [instance record] %s: %u bytes, %u overrides, %u parts, next part id %u%s%s", side, r.byte_size(),
+		u32(r.overrides.size()), u32(r.parts.size()), u32(r.next_part_id), r.runtime.valid ? ", runtime state" : "",
+		r.is_opaque() ? ", from a newer build (read-only)" : "");
+	for (const SInstanceProp& p : r.overrides)
+		Msg("-   override %s = %s", p.key.c_str(), p.value.c_str() ? p.value.c_str() : "");
+	for (const SInstancePart& p : r.parts)
+		Msg("-   part %u on %u/%s at %.3f: %s", u32(p.id), u32(p.parent), p.mount.c_str(), p.pos,
+			p.section.size() ? p.section.c_str() : "(emptied)");
+}
+
+class CCC_InstanceRecordDump : public IConsole_Command
+{
+public:
+	CCC_InstanceRecordDump(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		PIItem item = active_item();
+		if (!item)
+			return;
+		Msg("- [instance record] %s [%u]", item->object().cName().c_str(), item->object().ID());
+		dump_record("game side", item->instance_record());
+		CSE_ALifeInventoryItem* se = server_entity(item);
+		if (!se)
+		{
+			Msg("! [instance record] no server entity");
+			return;
+		}
+		dump_record("server side", se->m_instance);
+		Msg("%s [instance record] the two copies %s", se->m_instance == item->instance_record() ? "-" : "!",
+			se->m_instance == item->instance_record() ? "match" : "DIFFER");
+	}
+};
+
+// instance_record_set <key> [value]: sets an override on the active item; no value clears it
+class CCC_InstanceRecordSet : public IConsole_Command
+{
+public:
+	CCC_InstanceRecordSet(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = FALSE; };
+	virtual void Execute(LPCSTR args)
+	{
+		string256 key = "", value = "";
+		if (sscanf(args, "%255s %255[^\n]", key, value) < 1)
+		{
+			Msg("! [instance record] usage: instance_record_set <key> [value]");
+			return;
+		}
+		PIItem item = active_item();
+		if (!item)
+			return;
+		CSE_InstanceRecord r = item->instance_record();
+		const bool ok = (*value ? r.set_override(key, value) : r.clear_override(key)) && item->set_instance_record(r);
+		Msg("%s [instance record] %s %s on %s [%u]; run instance_record_dump to compare both copies", ok ? "-" : "!",
+			*value ? "set" : "cleared", key, item->object().cName().c_str(), item->object().ID());
+	}
+};
+
 void CCC_RegisterCommands()
 {
 	//Not needed for a singleplayer-only mod
@@ -2590,6 +2682,9 @@ void CCC_RegisterCommands()
 	CMD3(CCC_Mask, "hud_draw", &psHUD_Flags, HUD_DRAW);
 	CMD4(CCC_Integer, "hud_ik_compensation", &ps_hud_ik_compensation, 0, 1);
 	CMD4(CCC_Integer, "hud_shared_model", &ps_hud_shared_model, 0, 1);
+	CMD1(CCC_InstanceRecordTest, "instance_record_test");
+	CMD1(CCC_InstanceRecordDump, "instance_record_dump");
+	CMD1(CCC_InstanceRecordSet, "instance_record_set");
 	CMD4(CCC_Float, "wpn_world_shot_motion_dist", &ps_wpn_world_shot_motion_dist, 0.f, 500.f);
 	CMD4(CCC_Integer, "wpn_world_shot_motion_debug", &ps_wpn_world_shot_motion_debug, 0, 1);
 

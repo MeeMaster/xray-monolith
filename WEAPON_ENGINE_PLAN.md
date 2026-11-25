@@ -2,7 +2,7 @@
 
 How to change xray-monolith so that every weapon is an independent object: one base model, parts as separate models fitted at runtime, and a per-weapon record that rebuilds the gun on save and load. It builds on [WEAPON_MODELS.md](WEAPON_MODELS.md), [WEAPON_OBJECTS.md](WEAPON_OBJECTS.md) and the Part_bench mod (`../part_bench`, its `AGENTS.md` and `mw_*` scripts).
 
-Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Sizes are estimates from reading the code.
+Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Phase 2: 2a (the record type) tested, 2b (saving it) tested, 2c (game-side copy and sync) tested (sections 4.1–4.3). Sizes are estimates from reading the code.
 
 ---
 
@@ -76,16 +76,17 @@ sight_section = mw_part_kobra          ; zoom, scope texture, 3DSS lens, Mark Sw
 inv_item      = mw_part_kobra          ; new: the inventory item it comes from and returns to
 
 [mw_m4_tac_mount_top]                  ; new: a rail (section 8.3)
-bone     = mnt_top                     ; rail start; the rail runs along the mount's +Z
-length   = 0.26
+bone     = mnt_top                     ; rail start, the end nearer the model origin
+bone_end = mnt_top_end                 ; rail end; optional when the bone is named <bone>_end
 accepts  = picatinny
-stops    = near_top:0.12, far_top:0.233 ; named positions; old point-mount names still resolve
+stops    = near_top:mnt_near_top, far_top:mnt_far_top ; named positions, from bones or metres
 
 [mount_type_picatinny]                 ; new: shared data per rail standard
 pitch    = 0.01001                     ; slot spacing in metres; 0 = slide freely (dovetail)
 
 [mw_part_aimpoint]
-span     = -0.02, 0.025                ; new: rail length the part covers, rear and front of its origin
+span     = -0.012, 0.012               ; new: where its clamps sit, rear and front of its origin; must fit on the rail
+body     = -0.02, 0.025                ; new: its length for clashes; may overhang the rail; default = span
 ```
 
 A part can provide mounts of its own (`mw_mounts` on the part), so the fitted parts form a tree addressed by paths such as `handguard/near_bottom`.
@@ -168,6 +169,14 @@ Mounts that hold no entry fall back to `mw_defaults`, as in `mw_resolve`. An unm
 
 The record is a list keyed by part id, not a map keyed by mount path, because a rail can hold several parts (section 8.3). Paths such as `handguard/near_bottom` are derived from the parent chain for the API. A part on a rail is addressed as `top#4`, its mount name plus its id. Unknown props and a higher record version must survive a load and save, so mods can store their own placement state without a format change.
 
+**Implemented 2026-11-25 (2a). Tested 2026-11-25 (`instance_record_test`, all checks pass).** `CSE_InstanceRecord` (`xrServerEntities/InstanceRecord.*`), held by `CSE_ALifeInventoryItem` as `m_instance`:
+- **Layout** as above, with two additions: the body sits in a frame (u8 version, u16 size), and version 0 means an empty record of one byte. The runtime block has a presence flag, and rounds are a u8 ammo type index each.
+- **Robust reading.** Every read is bounded by the frame. A damaged body is logged and dropped, and the frame is still consumed, so whatever follows in the packet reads correctly.
+- **Newer formats** are kept as raw bytes, refuse edits, and are written back unchanged.
+- **Caps:** 8 KB per record, 64 parts, 32 props and 32 upgrades per part, 1 KB blob per part, 128 overrides, 1024 rounds, 255 characters per string. The editing functions (`set_override`, `add_part`, `remove_part`, which also removes children) refuse anything over a cap. `write()` saves an empty record, with an error in the log, if code filled the vectors directly past a cap.
+- **Part ids** come from `next_part_id` and are never reused, which is why a record whose parts were all removed still counts as not empty.
+- **Test:** console `instance_record_test` runs the round-trip, byte-identity, newer-version, damaged-body and editing checks and logs each result.
+
 ### 4.2 Writing it into the save
 
 Follow WEAPON_OBJECTS.md §12.5:
@@ -177,11 +186,27 @@ Follow WEAPON_OBJECTS.md §12.5:
 - Existing fields keep their offsets, so Anomaly's byte-level packet scripts (`utils_stpk`) keep working. Check that they tolerate trailing bytes (open question in WEAPON_OBJECTS.md §12.11).
 - Keep the record well under the 16 KB packet limit. Cap the part count and blob sizes and refuse writes that exceed them.
 
+**Implemented 2026-11-25 (2b). Tested in game 2026-11-25:** a version 128 save loads with empty records; overrides survive save/load and a level change.
+- `CSE_Abstract::Spawn_Write` writes an inventory item's record right after `STATE_Write`, inside the state size frame. `SPAWN_VERSION` is 129.
+- `Spawn_Read` reads it for version 129 from the bytes left in the frame, then sets the read position to the frame end. A damaged or newer record can't shift anything after it. Version 128 and older load with an empty record.
+- **Script packets are unchanged.** The record is not part of `STATE_Write`/`STATE_Read`, so `utils_stpk` and every script that builds packets with them see the same bytes as before.
+- **No item class reads leftover frame bytes** in its `STATE_Read` (checked in `xrServerEntities` and the GAMMA mods' scripts), so nothing else consumes the record.
+- `spawn_packs.cpp` `peek_graph_vertex` accepts versions 128–129; the header it reads is the same.
+- **Probably:** an older exe loading a 129 save ignores the record. The registry reads each spawn packet as its own buffer, so leftover bytes in it are skipped. Not tested.
+- **Debug commands:** `instance_record_dump` prints the record of the server entity behind the item in hands. `instance_record_set <key> [value]` sets an override, and no value clears it.
+
 ### 4.3 Client and server copies
 
 - The client `CWeapon` holds a copy (`m_instance`). Every change goes client to server through a new event `GE_INSTANCE_RECORD` carrying the whole record, handled next to `GE_INSTALL_UPGRADE` in `xrGame/xrServer_process_event.cpp`.
 - `net_Spawn` reads the record from the server entity before `Load` (section 5). It never lives in client data, which `switch_offline` wipes.
 - `alife():clone_weapon` copies the record, for as long as anything still clones.
+
+**Implemented 2026-11-25 (2c). Tested in game 2026-11-25:** setting and clearing an override through the game side reaches the server copy, and both copies match after save/load and a level change.
+- **Game-side copy.** `CInventoryItem::m_instance` holds a copy for every inventory item, not only weapons, matching where the server keeps it. `net_Spawn` fills it from the server entity, so going offline and back, a level change or a respawn always starts from the server's copy.
+- **Sending changes.** `CInventoryItem::set_instance_record` replaces the local copy and sends the whole record as `GE_INSTANCE_RECORD`, added at the end of the `GE_` list so existing values don't move. The server handler (`xrServer_process_event.cpp`) replaces the entity's copy. A record from a newer build is never replaced.
+- **Clones.** `alife():clone_weapon` copies the record.
+- **One direction only.** A change made on the server side while the item is online doesn't reach the game copy until the next `net_Spawn`. The script API (2h) edits through the game side while an item is online and through the server side while it is offline.
+- **Debug commands.** `instance_record_set` now goes through the game side and the event. `instance_record_dump` prints both copies and whether they match.
 
 ### 4.4 Bugs fixed along the way
 
@@ -463,25 +488,52 @@ Implementation:
 
 **Goal:** the engine ships fixed mount points, but a mod can add rails, slide parts along them, put several parts on one rail, or add its own placement rules, without engine changes or a new save format. The engine doesn't need to ship rail editing, only to avoid blocking it. The parts that are expensive to change after release are the record format (4.1) and the resolver's contract. Everything else here can grow later.
 
-**A point mount is a rail of length 0.** A mount section takes three optional keys:
+**A point mount is a rail of length 0.** A rail is marked by two points in the model: its start (`bone` + `offset`, as today, the end nearer the model origin) and its end. The engine works out the length and direction from them, so nobody has to measure the rail. A mount section takes these optional keys:
 
 | Key | Meaning | Default |
 |---|---|---|
-| `length` | Rail length in metres along the mount's +Z, starting at `bone` + `offset` | `0`, a point mount |
-| `stops` | Named positions, `name:pos, ...` | none |
-| `default_pos` | Where a part goes when nothing else says | first stop, else `0` |
+| `bone_end`, `offset_end` | Rail end, in the same forms as `bone` / `offset`. `offset_end` alone is relative to the start bone, for models without mount bones (such as the M4 world mesh) | the bone `<bone>_end` if the model has it, else no end |
+| `bone_end_world`, `offset_end_world` | End for the world model, matching `bone_world` / `offset_world` | as `bone_end` / `offset_end` |
+| `length` | Rail length in metres along the mount's +Z. Fallback when no end is given; an end wins | `0`, a point mount |
+| `stops` | Named positions, `name:pos, ...`. `pos` is metres from the start or a bone name, which is projected onto the rail | none |
+| `default_pos` | Where a part goes when nothing else says; metres, a stop name or a bone | first stop, else `0` |
 
-A `[mount_type_<name>]` section holds data shared by one rail standard: `pitch`, the slot spacing that positions snap to. `0` means the part slides freely, as on dovetail. A part takes `span = rear, front`, the stretch of rail it covers relative to its origin. Without `span` it covers a point.
+**The rail frame from two points.** Two points fix the rail's axis but not its roll, which sets the way a sight faces. The engine builds the frame as follows:
+
+- Origin: the start point.
+- Z: the unit vector from start to end. Length: the distance between them.
+- Y: the start bone's Y (with its `offset` rotation), made perpendicular to Z. X = Y × Z.
+- If the start bone's Y is within a few degrees of Z, the model is wrong. Log the mount and fall back to the start bone's own frame.
+
+The length and the end's position in the start bone's space are computed once, from bind poses (8.1), when the gun's mounts are loaded. Per frame, only the start bone's transform is followed, so a rail on an animated bone (a sliding handguard, a folding stock) moves with it. Rails are straight and rigid. Both points must be rigid relative to each other, normally children of the same bone. If the end bone is animated on its own, its animation is ignored.
+
+**Content convention:** a rail is a pair of bones named `mnt_<name>` and `mnt_<name>_end`, with the start bone's Y pointing out of the rail face. With that naming, the mount section needs only `bone` and `accepts`. Extra bones are subject to the motion-file spike (W1 1f). Until it lands, the `offset_end` form covers every model.
+
+A `[mount_type_<name>]` section holds data shared by one rail standard: `pitch`, the slot spacing that positions snap to. `0` means the part slides freely, as on dovetail. For example, picatinny `0.01001`, M-LOK `0.04`, dovetail `0`. A part's `mount_type` may list several standards (`picatinny, weaver`), and it fits a mount that accepts any of them.
+
+A part takes two lengths, each `rear, front` relative to its origin along the rail:
+
+- `span`: where its clamps sit. Clamping keeps the span on the rail. Without `span` the part clamps at a point.
+- `body`: how far the part reaches along the rail, used for clashes. It may overhang the rail, as a scope's bell does. Default: `span`.
 
 Every existing gun and part stays valid with no changes. Point mounts are rails of length 0 and parts without `span` are points, so the current rules give the same results.
 
 **Placement.** A part's transform is `mount frame × translate(0, 0, pos) × part local`. `pos` comes from the record, is snapped to the mount type's `pitch`, and is clamped so the part's span stays on the rail. That one rule covers sliding along a rail and several parts on one rail. Nested mounts on a part move with it.
 
-**Stops keep the old mount names working.** Part_bench guns model one rail as separate point mounts, such as the M4's `near_top` and `far_top`. A gun author can merge them into one `top` rail with `stops = near_top:0.12, far_top:0.233`. A part's `positions` list then resolves each name either as a whole rail (`top`: anywhere on it) or as a stop (`near_top`: on `top`, at that position). Old records that name `near_top` load onto the rail at that stop. Merging is optional, and both forms can exist on one gun.
+**Rails on parts.** Any number of rails, on the gun or on parts, use the same mount sections. A part lists its own rails in `mw_mounts`, in sections `[<part>_mount_<name>]`, with bones from the part's model or offsets. That covers:
+
+- **Adapters**, such as dovetail to picatinny, or a picatinny section bolted to an M-LOK slot: a part with `mount_type = dovetail` and one picatinny rail of its own.
+- **Canted rails**: a part whose rail start bone (or `offset` rotation) is rolled, for example 45°. The rail frame inherits the roll, and so does whatever sits on it.
+- **Risers and stacks**: any depth. The record links each part to its parent by id (4.1), so a chain such as gun → adapter → riser → red dot is just four entries.
+
+The roll of a part is read from its whole mount chain. A sight counts as canted when that roll is more than 10° from the gun's up axis. Part_bench's `canted` flag becomes an override for parts whose geometry doesn't show it. `canted_on_canted` reads the same derived value, so a canted adapter carrying a plain red dot counts as canted without a special part.
+
+**Stops keep the old mount names working.** Part_bench guns model one rail as separate point mounts, such as the M4's `near_top` and `far_top`. A gun author can merge them into one `top` rail with `stops = near_top:mnt_near_top, far_top:mnt_far_top`. The existing bones become stops by projection, so their positions don't have to be measured again. A part's `positions` list then resolves each name either as a whole rail (`top`: anywhere on it) or as a stop (`near_top`: on `top`, at that position). Old records that name `near_top` load onto the rail at that stop. Merging is optional, and both forms can exist on one gun.
 
 **Clashes:**
 
-- On one rail, two parts clash when their spans overlap.
+- On one rail, two parts clash when their bodies overlap.
+- **Through parts:** a part's footprint on its rail is its own body joined with the bodies of everything fitted on it, projected onto that rail. A part counts only when its rail is parallel to the parent's (within 5°). So a red dot on a riser that sticks out past the riser clashes with a scope beside the riser on the gun's rail. Parts on side rails or canted rails don't project, and clash only through `blocks`.
 - Between mounts, `blocks` keeps working with whole mount names, and also takes a range, `top:0.20-0.26`. This covers a long scope that reaches over the front of a handguard rail.
 - `hides` applies while the mount holds any part. Rules that depend on position, such as hiding only the front sight post, go through the resolve callback below.
 - Part_bench's `long` / `far_*` and `pair` rules stay as they are. Where a gun uses stops, they read the stop names.
@@ -546,7 +598,7 @@ Port `mw_aim.script` into the generated HUD section:
 ### 10.2 W10: Icons
 
 - Extend the weapon cell item (`CUIWeaponCellItem`) from three fixed addon layers to one layer per fitted part: the part's icon drawn at the gun's `mw_icon_<mount>` anchor minus the part's `icon_anchor`.
-- On a rail, the part's icon shifts by its `pos` times the gun's `mw_icon_scale` (pixels per metre, new key). The `mw_icon_<mount>` anchor is the rail start.
+- On a rail, the part's icon slides from the `mw_icon_<mount>` anchor (the rail start) towards a new `mw_icon_<mount>_end` anchor, in proportion to `pos` / length. This works for rails that look short or slanted in the icon. The same keys on a part place the parts fitted on it.
 - Base icons must show the stripped gun. Part_bench's plan (render the stripped gun and every part from Blender with one fixed camera per gun) produces matching anchors.
 - Later option: render the icon from the 3D model at runtime (`UI3dStatic` exists), which removes anchors entirely.
 
@@ -753,7 +805,7 @@ Each phase ships on its own. After phase 3, Part_bench can stop cloning. After p
 - **Threads and the dynamic section store.** Check whether any worker thread reads `pSettings` while sections are added or removed. Use a lock.
 - **Shared instance edge cases** (W1, 7.3): the root-bone override on drop and pickup, script animations that swap the HUD model (`script_anim_item_model`), and mods that call `HudItemData().m_model` expecting a separate model. Test drop, pickup, holster and script animations early.
 - **Lost SSS HUD effects** (W1, 7.4): no raindrops on the held gun until the SSS shaders take a per-draw flag, and the held gun's glass needs a visual check.
-- **Motion files and extra bones** (W1 1f) are unproven. Without them, gun mounts stay LTX offsets.
+- **Motion files and extra bones** (W1 1f) are unproven. Without them, gun mounts stay LTX offsets, and rails use `offset_end` instead of an end bone (8.3).
 - **Nested bone lookup** (W6) behaves differently between Part_bench's tested build (MT-TEST 2026.10.02) and the current source. Re-test before relying on part bones.
 - **Resolve callbacks that aren't reproducible** (8.3): a mod callback that reads game state can make the same record give different guns after a load. The rule is documented, but the engine can't enforce it. The debug build can run the resolver twice and log nodes that differ.
 - **Magazine mods** (Mags Redux) keep their own magazine state. A `magazine` part may need an adapter for them.

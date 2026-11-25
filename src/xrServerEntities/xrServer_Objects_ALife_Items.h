@@ -14,6 +14,7 @@
 
 #include "character_info_defs.h"
 #include "infoportiondefs.h"
+#include "InstanceRecord.h"
 
 #pragma warning(push)
 #pragma warning(disable:4005)
@@ -50,6 +51,9 @@ public:
 	CSE_ALifeObject* m_self;
 	u32 m_last_update_time;
 	xr_vector<shared_str> m_upgrades;
+	// Per-item configuration: parts, overrides, runtime state (WEAPON_ENGINE_PLAN.md 4.1).
+	// Not saved yet; change 2b writes it into the spawn packet.
+	CSE_InstanceRecord m_instance;
 
 public:
 	CSE_ALifeInventoryItem(LPCSTR caSection);

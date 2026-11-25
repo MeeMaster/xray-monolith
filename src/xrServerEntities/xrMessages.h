@@ -189,6 +189,9 @@ enum
 
 	GE_TRADER_FLAGS,
 
+	// Whole instance record of an inventory item, game to server (WEAPON_ENGINE_PLAN.md 4.3)
+	GE_INSTANCE_RECORD,
+
 	GE_FORCEDWORD = u32(-1)
 };
 

@@ -6618,6 +6618,9 @@
     <ClInclude Include="..\..\xrServerEntities\xrServer_Objects_ALife_Items.h">
       <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\xrServerEntities\InstanceRecord.h">
+      <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\xrServerEntities\xrServer_Objects_ALife_Monsters.h">
       <Filter>Core\Server\ServerEntities\objects_alife_monsters</Filter>
     </ClInclude>
@@ -10191,6 +10194,9 @@
       <Filter>Core\Server\ServerEntities\objects_alife</Filter>
     </ClCompile>
     <ClCompile Include="..\..\xrServerEntities\xrServer_Objects_ALife_Items.cpp">
+      <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\xrServerEntities\InstanceRecord.cpp">
       <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
     </ClCompile>
     <ClCompile Include="..\..\xrServerEntities\xrServer_Objects_ALife_Items_script.cpp">

@@ -282,6 +282,14 @@ void xrServer::Process_event(NET_Packet& P, ClientID sender)
 			iitem->add_upgrade(upgrade_id);
 		}
 		break;
+	case GE_INSTANCE_RECORD:
+		{
+			// WEAPON_ENGINE_PLAN.md 4.3: the game side sends the whole record after each change
+			CSE_ALifeInventoryItem* iitem = smart_cast<CSE_ALifeInventoryItem*>(receiver);
+			if (iitem)
+				iitem->m_instance.read(P);
+		}
+		break;
 	case GE_INV_BOX_STATUS:
 		{
 			u8 can_take, closed;

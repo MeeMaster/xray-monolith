@@ -338,6 +338,23 @@ bool CInventoryItem::Detach(const char* item_section_name, bool b_spawn_item)
 }
 
 /////////// network ///////////////////////////////
+// WEAPON_ENGINE_PLAN.md 4.3 (change 2c): the whole record goes to the server, which replaces its copy
+bool CInventoryItem::set_instance_record(const CSE_InstanceRecord& record)
+{
+	if (m_instance.is_opaque())
+	{
+		Msg("! [instance record] %s [%u] has a record from a newer build; it is read-only", object().cName().c_str(), object_id());
+		return false;
+	}
+	m_instance = record;
+
+	NET_Packet P;
+	CGameObject::u_EventGen(P, GE_INSTANCE_RECORD, object_id());
+	m_instance.write(P);
+	CGameObject::u_EventSend(P);
+	return true;
+}
+
 BOOL CInventoryItem::net_Spawn(CSE_Abstract* DC)
 {
 	VERIFY(!m_pInventory);
@@ -357,6 +374,8 @@ BOOL CInventoryItem::net_Spawn(CSE_Abstract* DC)
 
 	CSE_ALifeInventoryItem* pSE_InventoryItem = smart_cast<CSE_ALifeInventoryItem*>(e);
 	if (!pSE_InventoryItem) return TRUE;
+
+	m_instance = pSE_InventoryItem->m_instance; // WEAPON_ENGINE_PLAN.md 4.3
 
 	//!!!
 	m_fCondition = pSE_InventoryItem->m_fCondition;
