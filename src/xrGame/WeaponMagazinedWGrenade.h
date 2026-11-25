@@ -25,6 +25,8 @@ public:
 
 	virtual void save(NET_Packet& output_packet);
 	virtual void load(IReader& input_packet);
+	virtual void instance_runtime_capture(SInstanceRuntime& rt) const;
+	virtual bool instance_runtime_is_default(const SInstanceRuntime& rt) const;
 
 
 	virtual bool Attach(PIItem pIItem, bool b_send_event);

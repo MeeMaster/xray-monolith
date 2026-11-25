@@ -25,7 +25,7 @@ public:
 	void prefetch();
 	void clear();
 
-	CObject* create(LPCSTR name);
+	CObject* create(LPCSTR name, LPCSTR load_section = nullptr); // load_section: config section to Load from, when it is not name (WEAPON_ENGINE_PLAN.md 5.3)
 	void destroy(CObject* O);
 
 	IGame_ObjectPool();

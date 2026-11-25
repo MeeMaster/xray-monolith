@@ -76,7 +76,7 @@ float CWeapon::SDS_Radius(bool alt) {
 			scope_tex_name = alt ? m_secondary_scope_tex_name : m_primary_scope_tex_name;
 
 			// demonized: ugly hack to fix stuck scope texture on old scopes system
-			if (!READ_IF_EXISTS(pSettings, r_string, cNameSect(), "scope_texture", NULL)) {
+			if (!READ_IF_EXISTS(pSettings, r_string, config_section(), "scope_texture", NULL)) {
 				scope_tex_name = NULL;
 			}
 		}
@@ -311,7 +311,7 @@ void CWeapon::UpdateZoomParams() {
 	}
 
 	//////////
-	m_zoom_params.m_fMinBaseZoomFactor = READ_IF_EXISTS(pSettings, r_float, cNameSect(), "min_scope_zoom_factor", 200.0f);
+	m_zoom_params.m_fMinBaseZoomFactor = READ_IF_EXISTS(pSettings, r_float, config_section(), "min_scope_zoom_factor", 200.0f);
 
 
 	float zoom_multiple = 1.0f;
@@ -331,17 +331,17 @@ void CWeapon::UpdateZoomParams() {
 	// update zoom factor
 	if (m_zoomtype == 2) //GL
 	{
-		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_GL || READ_IF_EXISTS(pSettings, r_bool, cNameSect(), "scope_dynamic_zoom_gl", false);
-		m_zoom_params.m_fScopeZoomFactor = g_player_hud->m_adjust_mode ? g_player_hud->m_adjust_zoom_factor[1] : READ_IF_EXISTS(pSettings, r_float, cNameSect(), "gl_zoom_factor", 0);
+		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_GL || READ_IF_EXISTS(pSettings, r_bool, config_section(), "scope_dynamic_zoom_gl", false);
+		m_zoom_params.m_fScopeZoomFactor = g_player_hud->m_adjust_mode ? g_player_hud->m_adjust_zoom_factor[1] : READ_IF_EXISTS(pSettings, r_float, config_section(), "gl_zoom_factor", 0);
 		m_zoom_params.m_fZoomStepCount = 0;
 	} else if (m_zoomtype == 1) //Alt
 	{
-		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Alt || READ_IF_EXISTS(pSettings, r_bool, cNameSect(), "scope_dynamic_zoom_alt", false);
-		m_zoom_params.m_fScopeZoomFactor = (g_player_hud->m_adjust_mode ? g_player_hud->m_adjust_zoom_factor[2] : READ_IF_EXISTS(pSettings, r_float, cNameSect(), "scope_zoom_factor_alt", 0)) / (READ_IF_EXISTS(pSettings, r_string, cNameSect(), "scope_texture_alt", NULL) && zoomFlags.test(SDS_ZOOM) && (SDS_Radius(true) > 0.0) ? zoom_multiple : 1);
+		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Alt || READ_IF_EXISTS(pSettings, r_bool, config_section(), "scope_dynamic_zoom_alt", false);
+		m_zoom_params.m_fScopeZoomFactor = (g_player_hud->m_adjust_mode ? g_player_hud->m_adjust_zoom_factor[2] : READ_IF_EXISTS(pSettings, r_float, config_section(), "scope_zoom_factor_alt", 0)) / (READ_IF_EXISTS(pSettings, r_string, config_section(), "scope_texture_alt", NULL) && zoomFlags.test(SDS_ZOOM) && (SDS_Radius(true) > 0.0) ? zoom_multiple : 1);
 		m_zoom_params.m_fZoomStepCount = 0;
 	} else //Main Sight
 	{
-		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Primary || READ_IF_EXISTS(pSettings, r_bool, cNameSect(), "scope_dynamic_zoom", false);
+		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Primary || READ_IF_EXISTS(pSettings, r_bool, config_section(), "scope_dynamic_zoom", false);
 		u32 stepCount = 0;
 		if (g_player_hud->m_adjust_mode)
 		{
@@ -359,7 +359,7 @@ void CWeapon::UpdateZoomParams() {
 			m_zoom_params.m_fScopeZoomFactor = m_zoom_params.m_fBaseZoomFactor / zoom_multiple;
 		}
 		if (stepCount == 0)
-			stepCount = READ_IF_EXISTS(pSettings, r_float, cNameSect(), "zoom_step_count", 0);
+			stepCount = READ_IF_EXISTS(pSettings, r_float, config_section(), "zoom_step_count", 0);
 		m_zoom_params.m_fZoomStepCount = stepCount;
 	}
 
@@ -400,12 +400,12 @@ void CWeapon::UpdateUIScope()
 		else
 		{
 			if (!m_primary_scope_tex_name) {
-				m_primary_scope_tex_name = READ_IF_EXISTS(pSettings, r_string, cNameSect(), "scope_texture", NULL);
+				m_primary_scope_tex_name = READ_IF_EXISTS(pSettings, r_string, config_section(), "scope_texture", NULL);
 			}
 			scope_tex_name = m_primary_scope_tex_name;
 
 			// demonized: ugly hack to fix stuck scope texture on old scopes system
-			if (!READ_IF_EXISTS(pSettings, r_string, cNameSect(), "scope_texture", NULL)) {
+			if (!READ_IF_EXISTS(pSettings, r_string, config_section(), "scope_texture", NULL)) {
 				scope_tex_name = NULL;
 			}
 		}
@@ -413,7 +413,7 @@ void CWeapon::UpdateUIScope()
 	else if (m_zoomtype == 1)
 	{
 		if (!m_secondary_scope_tex_name) {
-			m_secondary_scope_tex_name = READ_IF_EXISTS(pSettings, r_string, cNameSect(), "scope_texture_alt", NULL);
+			m_secondary_scope_tex_name = READ_IF_EXISTS(pSettings, r_string, config_section(), "scope_texture_alt", NULL);
 		}
 		scope_tex_name = m_secondary_scope_tex_name;
 	}
@@ -519,13 +519,13 @@ void CWeapon::SetZoomTypeAndParams(u8 zoomType)
 	if (zoomType == 1)
 	{
 		SetZoomType(1);
-		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Alt || READ_IF_EXISTS(pSettings, r_bool, cNameSect(), "scope_dynamic_zoom_alt", false);
+		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Alt || READ_IF_EXISTS(pSettings, r_bool, config_section(), "scope_dynamic_zoom_alt", false);
 	}
 
 	if (zoomType == 0)
 	{
 		SetZoomType(0);
-		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Primary || READ_IF_EXISTS(pSettings, r_bool, cNameSect(), "scope_dynamic_zoom", false);
+		m_zoom_params.m_bUseDynamicZoom = m_zoom_params.m_bUseDynamicZoom_Primary || READ_IF_EXISTS(pSettings, r_bool, config_section(), "scope_dynamic_zoom", false);
 	}
 }
 
@@ -799,7 +799,7 @@ void CWeapon::Load(LPCSTR section)
 	m_zoom_params.m_bZoomEnabled = !!pSettings->r_bool(section, "zoom_enabled");
 	m_zoom_params.m_fZoomRotateTime = pSettings->r_float(section, "zoom_rotate_time");
 	m_fZoomRotateModifier = READ_IF_EXISTS(pSettings, r_float, section, "zoom_rotate_modifier", 1);
-	m_zoom_params.m_fBaseZoomFactor = READ_IF_EXISTS(pSettings, r_float, cNameSect(), "scope_zoom_factor", 0);
+	m_zoom_params.m_fBaseZoomFactor = READ_IF_EXISTS(pSettings, r_float, config_section(), "scope_zoom_factor", 0);
 	m_modular_attachments = READ_IF_EXISTS(pSettings, r_bool, section, "modular_attachments", false);
 
 	if (m_eScopeStatus == ALife::eAddonAttachable)
@@ -833,7 +833,7 @@ void CWeapon::Load(LPCSTR section)
 	}
 	else if (m_eScopeStatus == ALife::eAddonPermanent)
 	{
-		shared_str scope_tex_name = READ_IF_EXISTS(pSettings, r_string, cNameSect(), "scope_texture", NULL);
+		shared_str scope_tex_name = READ_IF_EXISTS(pSettings, r_string, config_section(), "scope_texture", NULL);
 
 		if (!!scope_tex_name && !scope_tex_name.equal("none") && !g_player_hud->m_adjust_mode)
 		{
@@ -1140,6 +1140,8 @@ BOOL CWeapon::net_Spawn(CSE_Abstract* DC)
 			m_magazine.push_back(m_DefaultCartridge);
 	}
 
+	instance_runtime_apply(m_instance.runtime); // 2d: mixed magazine, fire mode
+
 	UpdateAddonsVisibility();
 	InitAddons();
 
@@ -1244,6 +1246,7 @@ void CWeapon::net_Import(NET_Packet& P)
 
 void CWeapon::save(NET_Packet& output_packet)
 {
+	instance_runtime_sync(); // 2d: the server copy must be current before the game is written
 	inherited::save(output_packet);
 	save_data(iAmmoElapsed, output_packet);
 	save_data(m_cur_scope, output_packet);
@@ -1443,6 +1446,11 @@ void CWeapon::UpdateCL()
 	inherited::UpdateCL();
 	UpdateHUDAddonsVisibility();
 	UpdateWorldMotion();
+	if (Device.dwTimeGlobal >= m_instance_sync_time)
+	{
+		m_instance_sync_time = Device.dwTimeGlobal + 500;
+		instance_runtime_sync(); // 2d
+	}
 	//ïîäñâåòêà îò âûñòðåëà
 	UpdateLight();
 
@@ -2202,6 +2210,80 @@ void CWeapon::StopWorldMotion()
 	for (u16 pid = 0; pid < pc; ++pid)
 		ka->LL_CloseCycle(pid, u8(-1));
 	K->CalculateBones_Invalidate();
+}
+
+// 2d (WEAPON_ENGINE_PLAN.md 4.1): runtime block of the instance record. Only state net_Spawn would not rebuild
+// on its own is stored: a magazine of mixed ammo types, a fire mode other than the default, launcher mode.
+void CWeapon::instance_runtime_capture(SInstanceRuntime& rt) const
+{
+	rt = SInstanceRuntime();
+	rt.valid = true;
+	const u32 n = _min(u32(m_magazine.size()), u32(CSE_InstanceRecord::MAX_ROUNDS));
+	rt.rounds.reserve(n);
+	for (u32 i = 0; i < n; ++i)
+		rt.rounds.push_back(m_magazine[i].m_LocalAmmoType);
+}
+
+bool CWeapon::instance_runtime_is_default(const SInstanceRuntime& rt) const
+{
+	// net_Spawn refills the magazine with copies of the current ammo type
+	for (u8 t : rt.rounds)
+		if (t != m_ammoType)
+			return false;
+	return true;
+}
+
+// net_Spawn filled the magazine with iAmmoElapsed copies of the current type. Shots remove rounds from the end
+// only, so the first iAmmoElapsed stored types are the rounds still in the magazine.
+void CWeapon::instance_runtime_apply(const SInstanceRuntime& rt)
+{
+	if (!rt.valid || rt.gl_mode)
+		return; // in launcher mode the saved round count is the grenades'
+
+	xr_vector<CCartridge> loaded(m_ammoTypes.size());
+	xr_vector<u8> has;
+	has.resize(m_ammoTypes.size(), 0);
+	const u32 n = _min(u32(m_magazine.size()), u32(rt.rounds.size()));
+	for (u32 i = 0; i < n; ++i)
+	{
+		const u8 t = rt.rounds[i];
+		if (t >= m_ammoTypes.size() || t == m_magazine[i].m_LocalAmmoType)
+			continue;
+		if (!has[t])
+		{
+			loaded[t].Load(m_ammoTypes[t].c_str(), t, m_APk);
+			has[t] = 1;
+		}
+		m_magazine[i] = loaded[t];
+	}
+}
+
+// Sends the runtime block when the stored one no longer describes the weapon. Firing alone never triggers it:
+// the remaining rounds stay a prefix of the stored list, and the saved round count says how many are left.
+void CWeapon::instance_runtime_sync()
+{
+	if (m_instance.is_opaque())
+		return;
+
+	SInstanceRuntime now;
+	instance_runtime_capture(now);
+	if (instance_runtime_is_default(now))
+		now = SInstanceRuntime(); // nothing net_Spawn would not rebuild
+
+	const SInstanceRuntime& stored = m_instance.runtime;
+	bool covered;
+	if (!now.valid)
+		covered = !stored.valid;
+	else
+		covered = stored.valid && stored.fire_mode == now.fire_mode && stored.gl_mode == now.gl_mode &&
+			now.rounds.size() <= stored.rounds.size() &&
+			std::equal(now.rounds.begin(), now.rounds.end(), stored.rounds.begin());
+	if (covered)
+		return;
+
+	CSE_InstanceRecord r = m_instance;
+	r.runtime = now;
+	set_instance_record(r);
 }
 
 void CWeapon::InitAddons()

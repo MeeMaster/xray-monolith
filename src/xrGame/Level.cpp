@@ -1005,6 +1005,9 @@ void CLevel::OnFrame()
 {
 	PROF_EVENT("CLevel::OnFrame()");
 
+	// 2e: free dynamic config sections replaced or removed last frame; no config read is in progress here
+	pSettings->dynamic_sections_collect();
+
 #ifdef DEBUG_MEMORY_MANAGER
     debug_memory_guard __guard__;
 #endif

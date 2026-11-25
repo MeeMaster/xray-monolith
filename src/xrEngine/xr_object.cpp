@@ -231,8 +231,15 @@ void CObject::Load(LPCSTR section)
 {
 	// Name
 	R_ASSERT(section);
-	cName_set(section);
-	cNameSect_set(section);
+	// A generated section ([<base>_i<id>], WEAPON_ENGINE_PLAN.md 5.3) only supplies config values: the object keeps
+	// the base section the pool set as its identity
+	if (CInifile::is_dynamic_name(section) && NameSection.size())
+		cName_set(*NameSection);
+	else
+	{
+		cName_set(section);
+		cNameSect_set(section);
+	}
 
 	// Visual and light-track
 	if (pSettings->line_exist(section, "visual"))

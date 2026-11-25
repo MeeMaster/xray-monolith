@@ -317,9 +317,16 @@ public:
 	// server entity in net_Spawn; every change goes to the server as a whole record (GE_INSTANCE_RECORD).
 protected:
 	CSE_InstanceRecord m_instance;
+	// Generated config section ([<base>_i<id>], 2f) while the record needs one; empty otherwise
+	shared_str m_instance_section;
 
 public:
 	const CSE_InstanceRecord& instance_record() const { return m_instance; }
+	// The item's generated section, or its base section when it has none (WEAPON_ENGINE_PLAN.md 5.3)
+	shared_str instance_section() const;
+	bool has_instance_section() const { return !!m_instance_section.size(); }
+	// Section to read config values from: the generated one, else the base. Identity reads keep cNameSect().
+	const shared_str& config_section() const { return m_instance_section.size() ? m_instance_section : m_section_id; }
 	// Replaces the record here and on the server. False for a record from a newer build, which is read-only.
 	bool set_instance_record(const CSE_InstanceRecord& record);
 

@@ -328,6 +328,15 @@ public:
 	shared_str m_world_shot_motion;
 	u32 m_world_motion_end = 0; // Device.dwTimeGlobal when the motion ends, 0 when none plays
 	bool m_world_motion_root = false; // the motion pinned the root bone
+
+	// Runtime block of the instance record (WEAPON_ENGINE_PLAN.md 4.1, change 2d): fire mode, grenade launcher
+	// mode and the ammo type of each round. Capture fills it from the live weapon, apply puts it back after
+	// net_Spawn, sync sends it to the server when it no longer describes the weapon.
+	virtual void instance_runtime_capture(SInstanceRuntime& rt) const;
+	virtual void instance_runtime_apply(const SInstanceRuntime& rt);
+	virtual bool instance_runtime_is_default(const SInstanceRuntime& rt) const;
+	void instance_runtime_sync();
+	u32 m_instance_sync_time = 0;
 	//èíèöèàëèçàöèÿ ñâîéñòâ ïðèñîåäèíåííûõ àääîíîâ
 	virtual void InitAddons();
 

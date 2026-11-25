@@ -2,7 +2,7 @@
 
 How to change xray-monolith so that every weapon is an independent object: one base model, parts as separate models fitted at runtime, and a per-weapon record that rebuilds the gun on save and load. It builds on [WEAPON_MODELS.md](WEAPON_MODELS.md), [WEAPON_OBJECTS.md](WEAPON_OBJECTS.md) and the Part_bench mod (`../part_bench`, its `AGENTS.md` and `mw_*` scripts).
 
-Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Phase 2: 2a (the record type) tested, 2b (saving it) tested, 2c (game-side copy and sync) tested (sections 4.1–4.3). Sizes are estimates from reading the code.
+Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Phase 2: 2a (the record type) tested, 2b (saving it) tested, 2c (game-side copy and sync) tested (sections 4.1–4.3), 2d (runtime block) fire mode tested (section 4.4), 2e (dynamic sections) tested (section 5.1), 2f (generated sections) tested, 2g (reading them) tested (sections 5.2, 5.3), 2h (script API, first slice) and 2i (tests) tested (section 14). Phase 2 is complete. Sizes are estimates from reading the code.
 
 ---
 
@@ -215,6 +215,18 @@ From WEAPON_OBJECTS.md §10:
 - **Bugs 2 and 5** (scope index lost offline, index 0 overloaded) disappear. The record stores the sight's section, not an index.
 - **Bugs 7 and 8** (mixed magazines collapse; fire mode, GL mode and shotgun ammo not in STATE) are fixed by the record's runtime block.
 
+**Implemented 2026-11-25 (2d). Tested in game 2026-11-25:** a non-default fire mode survives the gun going offline (dropped, level change, back). Mixed magazines not tested yet. The runtime block in use (`Weapon.cpp`, `WeaponMagazined.cpp`, `WeaponMagazinedWGrenade.cpp`):
+- **What the bugs really are.** Fire mode and launcher mode are already kept in the weapon's client data (`save`/`load`), so they survive save/load on the actor. They are lost when an item goes offline, because `switch_offline` clears client data. Mixed magazines are lost everywhere, because `net_Spawn` refills the magazine with copies of one type.
+- **Capture.** The per-round ammo type indices, oldest first (the bottom of `m_magazine`; in launcher mode the rifle rounds in `m_magazine2`), plus the fire mode and launcher mode.
+- **Defaults aren't stored.** A weapon whose rounds all match its current ammo type, in the default fire mode (the last one listed) and not in launcher mode, keeps an empty block. Most weapons add nothing to the save.
+- **Sync** (`CWeapon::instance_runtime_sync`) sends the block only when it no longer describes the weapon. Shots only remove rounds from the end, so after firing the rounds left are still a prefix of the stored list, and the saved round count says how many remain. Reloads, unloads, mode switches and script changes do trigger a send. Sync runs every 0.5 s from `UpdateCL` and once from `CWeapon::save`, which the client save calls before the server writes the file. Single player handles events on receipt, so the record arrives first.
+- **Apply.** At the end of `CWeapon::net_Spawn`, the first `iAmmoElapsed` stored types replace the default cartridges, and `CWeaponMagazined` restores the fire mode. The queue size is only set for the actor, as in `OnH_A_Chield`.
+- **Not covered:**
+  - launcher mode itself is not restored on spawn; the client data still does that for the actor;
+  - rounds are not applied when the weapon was saved in launcher mode, because the saved round count is then the grenades';
+  - a magazine changed while the weapon is neither updating nor saved (for example unloaded in the inventory and then taken offline) keeps the previous block.
+- **Debug:** `instance_record_dump` prints the runtime block.
+
 **Done when:** a gun with parts survives save/load, an NPC carrying it going offline and back, and a level change, with the same ID. An old save loads with empty records.
 
 ---
@@ -232,6 +244,17 @@ From WEAPON_OBJECTS.md §10:
 - `remove_dynamic_section(name)` on going offline or on destroy.
 - Only names with the reserved suffix (`_i<id>`) may be dynamic, so a typo can never shadow a real section.
 
+**Implemented 2026-11-25 (2e). Tested 2026-11-25 (`ini_dynamic_test` passes; 100 000 missed lookups take 5.5 ms, about 55 ns each, with no dynamic sections live).** `xrCore/xr_ini.*`:
+- **Store.** `CInifile::DynamicStore`, created on first use: an `xr_map` from lower-case name to a heap `Sect*` (pointer-stable), an `xrCriticalSection`, and an atomic count.
+- **Two hooks only.** `r_section` and `section_exist` check the store after the normal lookup misses. Everything else (`r_string` and every typed reader, `line_exist`, `line_count`, `r_line`) goes through `r_section`. A hit in the loaded sections costs exactly what it did before. A miss costs a suffix check, and the lock is taken only for an `_i<digits>` name while dynamic sections exist.
+- **API**, callable on `pSettings` (const):
+  - `add_dynamic_section(name, base, items)` copies the loaded, already flattened base and replaces or adds the items; adding again replaces the section;
+  - `remove_dynamic_section`, `dynamic_section_exist`, `dynamic_section_count`.
+  - It refuses names without the `_i<digits>` suffix, a name that a loaded section already has, and a base that isn't a loaded section.
+- **Lifetime.** A replaced or removed section is retired, not freed, so a `Sect&` handed out earlier stays valid. `CLevel::OnFrame` frees retired sections at the start of each frame (`dynamic_sections_collect`).
+- **Not in `sections()`.** Scripts and code that iterate every section never see per-object sections.
+- **Test:** console `ini_dynamic_test [base]` (default `wpn_ak74`) checks building, reading, overriding and adding keys, line counts, rebuilding, refusals and removal. It also times 100 000 missed lookups.
+
 ### 5.2 What goes into a generated section
 
 Built in this order, later layers overriding earlier ones:
@@ -244,12 +267,33 @@ Part **modifiers** are not written here. They are applied after `Load` through t
 
 A matching **generated HUD section** `[<hud>_i<id>]` carries the computed aim offsets (W8) and, later, hand-pose animation keys if poses ever move into the engine.
 
+**Implemented 2026-11-25 (2f). Tested in game 2026-11-25:** the section is built from overrides, rebuilt after save/load, a level change and offline and back, and dropped when the overrides are cleared. `xrGame/instance_section.*`:
+- **Builder.** `instance_section::build(base, id, record)` builds `[<base>_i<id>]` from the loaded base and the record's overrides. Part role data joins in phase 5. It removes the section instead when the record needs none: no overrides, or a record from a newer build. A runtime-only record (2d) gets no section, so most items never have one.
+- **Built before `Load`.** `Load` runs inside `Objects.Create` (`IGame_ObjectPool::create`), before `net_Spawn`, so `CLevel::g_sv_Spawn` builds the section from the spawn entity, which already carries the record and the ID, just before `Objects.Create`. 2g can then hand it to `Load`.
+- **Item side.** `CInventoryItem` keeps the name while the section exists (`m_instance_section`, read with `instance_section()`, which falls back to the base, and `has_instance_section()`). `set_instance_record` rebuilds the section when the overrides change; a 2d runtime sync leaves it alone. `net_Destroy` removes it, so going offline, being destroyed and a level unload all clean up.
+- **Not read yet.** The weapon still loads and reads its base section; 2g switches it over.
+- **Debug:** `instance_record_dump` prints the item's config section and reads each override back from it through `pSettings`.
+
 ### 5.3 Identity
 
 - `cNameSect()` / `section()` keep returning the **base** section. Trade lists, ammo checks, repair kits, upgrade roots and most scripts key on it.
 - `instance_section()` (new) returns the generated name. `CWeapon::Load` and `reload` receive it instead of the base.
 - The upgrade manager keeps looking up roots by base section (`xrGame/inventory_upgrade_manager.cpp:304`, `get_root(item.m_section_id)`).
 - `GetScopeName()` and the other functions that re-read the INI at runtime (WEAPON_OBJECTS.md §12.1, point 4) read the generated section.
+
+**Implemented 2026-11-25 (2g). Tested in game 2026-11-25:** an `rpm` override changes the fire rate after save/load, and `section()` still returns the base.
+- **`Load` reads the generated section.** `IGame_ObjectPool::create` and `CObjectList::Create` take an optional load section; `CLevel::g_sv_Spawn` passes the one 2f built. The pool still sets `cNameSect` to the base before `Load`.
+- **Identity stays the base.** `CObject::Load` keeps the pool's `cNameSect` (and uses it as the debug name) when it is given a dynamic name. `CInventoryItem::Load` sets `m_section_id`, which trade and upgrades key on, to the base. Scripts' `section()` and the server entity's `s_name` are untouched.
+- **`reload`.** `CGameObject::net_Spawn` reloads an inventory item from its generated section when one exists. The script binder still gets the base.
+- **`CInventoryItem::config_section()`** returns the generated section, or the base, and is valid from `Load` on (`Load` records a dynamic name). The weapon's runtime config reads now use it:
+  - `SDS_Radius`, `UpdateZoomParams`, `UpdateUIScope`, `SetZoomTypeAndParams` and the zoom and scope reads in `CWeapon::Load`;
+  - `LoadLights` in `CWeaponMagazined::InitAddons`;
+  - `motion_mark_reload` in both `OnMotionMark` functions.
+  - Identity uses keep `cNameSect()`: ammo matching, addon matching, icons, anticheat names, logs.
+- **Limits:**
+  - an override takes effect when the item next spawns (save/load, level change, offline and back), not at once; that is `ReloadConfig` (phase 3);
+  - a `visual` override doesn't apply, because the world visual comes from the server entity, which takes it from the base;
+  - inventory display reads that still use `cNameSect()` at runtime (`inv_grid_*`, `upgr_icon_*`, `kill_msg_*`) read the base.
 
 **Done when:** a weapon whose record overrides `rpm` fires at the overridden rate after save/load, and `section()` still returns the base.
 
@@ -743,6 +787,30 @@ On the weapon's game object unless noted:
 Callbacks: `on_weapon_parts_changed(wpn)`, `on_weapon_rebuilt(wpn)`.
 
 Console commands (with `-dbg`): `mw_dump <id>` writes the generated section to an `.ltx` in `appdata` for inspection; `mw_resolve_test`; `mw_fit`; `mw_remove`.
+
+**First slice implemented 2026-11-25 (2h). Tested in game 2026-11-25 (`mw_ir.api()`, 38 checks pass).** `xrGame/instance_record_script.*`, registered on `game_object` (any inventory item) and on `cse_alife_inventory_item`:
+
+| Function | Notes |
+|---|---|
+| `instance_section()` | `game_object` only. The generated section, or the base when the item has none |
+| `get_override(key)` | The value as a string, or `nil` |
+| `set_override(key, value)` | Strings, numbers and booleans are stored as text (`120`, `0.25`, `true`). `nil`, or no value, clears the key. A table is refused. Returns `false` when refused |
+| `clear_override(key)` | `false` when the key wasn't set |
+| `get_overrides()` | A table key → value. Replaces `iterate_overrides()` from the table above |
+| `get_parts()` | The final form: path → `{path, id, parent, mount, pos, section, condition, paintjob, upgrades, props, data_size}`. A part sharing its parent and mount with another is named `<mount>#<id>`. The blob itself waits for `get_part_data` |
+| `record_add_part(parent_id, mount, section [, pos])`, `record_remove_part(id)` | **Raw record edits, for tests.** Nothing is checked against the gun and nothing is drawn. `fit_part` and `remove_part` replace them in phase 5. `record_remove_part` removes children too and returns the count |
+| `record_size()` | Bytes the record adds to the save |
+
+- **Which copy is edited (4.3).** On `game_object`, edits go through the game-side copy and the event. On the server object, an edit goes through the game object while one exists, and otherwise changes the server copy, which the next spawn reads. Reads on the server object also return the game-side copy while the item is online, so both sides always report the same record.
+- **No empty `luabind::object` returns.** Copying one on the way out reads a missing reference and crashes, so `get_override` returns a string pointer, and a null pointer reaches Lua as `nil`.
+- **Lua state.** The functions that return a table (`get_overrides`, `get_parts`) take the caller's Lua state through luabind's `raw<1>()` policy. A value built on the main state is pushed onto the main state's stack, so a call from a coroutine (`run_string`, many callbacks) would get nothing back. The engine's older table getters (`list_bones`, `get_shaders`) have that problem.
+- **Effect.** An override changes the generated section at once, but the weapon reads it on its next spawn (5.3 limits).
+
+**Tests (2i), run 2026-11-25, all pass:** save/load (`verify()` 32 checks), a save → load round trip (`compare`, no record changed), an NPC carrying the gun offline after a level change (server copy, 15 checks), an edit made while offline that reached the game side when the gun came back online (33 checks), and `cleanup()`. Set up with `tests/instance_record` (`install.ps1`) adds `mw_ir.script`:
+- `api()` exercises every function above on both objects of the gun in hand, then removes what it added;
+- `prepare()` marks the gun in hand (rpm 120, a mark key, a scope with a cover, two parts on one rail), and `verify()` finds it wherever it is, online or offline, and checks the whole record, the generated section and the base identity;
+- `npc_give()` and `offline_edit()` cover an NPC carrying it offline and an edit made while it is offline;
+- `snapshot(name)` writes every non-empty record in the game to `appdata`, and `compare(a, b)` reports any record that changed between two snapshots, for the save → load → save round trip.
 
 ---
 

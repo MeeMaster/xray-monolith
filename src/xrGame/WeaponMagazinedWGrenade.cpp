@@ -1318,3 +1318,23 @@ void CWeaponMagazinedWGrenade::UnloadRocket()
 	}
 }
 #endif
+
+// 2d (WEAPON_ENGINE_PLAN.md 4.1): launcher mode joins the runtime block. In launcher mode the rifle rounds sit
+// in m_magazine2, so they are what the record keeps.
+void CWeaponMagazinedWGrenade::instance_runtime_capture(SInstanceRuntime& rt) const
+{
+	inherited::instance_runtime_capture(rt);
+	rt.gl_mode = m_bGrenadeMode ? 1 : 0;
+	if (m_bGrenadeMode)
+	{
+		rt.rounds.clear();
+		const u32 n = _min(u32(m_magazine2.size()), u32(CSE_InstanceRecord::MAX_ROUNDS));
+		for (u32 i = 0; i < n; ++i)
+			rt.rounds.push_back(m_magazine2[i].m_LocalAmmoType);
+	}
+}
+
+bool CWeaponMagazinedWGrenade::instance_runtime_is_default(const SInstanceRuntime& rt) const
+{
+	return !rt.gl_mode && inherited::instance_runtime_is_default(rt);
+}

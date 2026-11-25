@@ -1563,7 +1563,7 @@ void CWeaponMagazined::InitAddons()
 		m_sSndShotCurrent = "sndSilencerShot";
 
 		//Load silencer values
-		LoadLights(*cNameSect(), "silencer_");
+		LoadLights(*config_section(), "silencer_");
 		ApplySilencerKoeffs();
 	}
 	else
@@ -1573,7 +1573,7 @@ void CWeaponMagazined::InitAddons()
 		m_sSndShotCurrent = "sndShot";
 
 		//Load normal values
-		LoadLights(*cNameSect(), "");
+		LoadLights(*config_section(), "");
 		ResetSilencerKoeffs();
 	}
 
@@ -1763,7 +1763,7 @@ void CWeaponMagazined::OnMotionMark(u32 state, const motion_marks& M, float mark
 	inherited::OnMotionMark(state, M, mark_start, mark_end);
 
     // Edited by Verdatim 18.4.2026
-    shared_str reloadMarkName = READ_IF_EXISTS(pSettings, r_string, cNameSect(), "motion_mark_reload", "");
+    shared_str reloadMarkName = READ_IF_EXISTS(pSettings, r_string, config_section(), "motion_mark_reload", "");
 	if (state == eReload && (reloadMarkName.size() == 0 || reloadMarkName == M.name))
 	{
 		if (bClearJamOnly && (!m_bUseStrictReloadMark || xr_strcmp(M.name.c_str(), "clear_jam") == 0))
@@ -2302,4 +2302,29 @@ void CWeaponMagazined::FireBullet(const Fvector& pos,
 	}
 
 	inherited::FireBullet(pos, shot_dir, fire_disp, cartridge, parent_id, weapon_id, send_hit, GetAmmoElapsed());
+}
+
+// 2d (WEAPON_ENGINE_PLAN.md 4.1): the fire mode joins the runtime block
+void CWeaponMagazined::instance_runtime_capture(SInstanceRuntime& rt) const
+{
+	inherited::instance_runtime_capture(rt);
+	rt.fire_mode = u8(m_iCurFireMode & 0xff);
+}
+
+bool CWeaponMagazined::instance_runtime_is_default(const SInstanceRuntime& rt) const
+{
+	// Load starts in the last listed mode
+	const u8 default_mode = m_aFireModes.empty() ? 0 : u8(m_aFireModes.size() - 1);
+	return rt.fire_mode == default_mode && inherited::instance_runtime_is_default(rt);
+}
+
+void CWeaponMagazined::instance_runtime_apply(const SInstanceRuntime& rt)
+{
+	inherited::instance_runtime_apply(rt);
+	if (!rt.valid || rt.fire_mode >= m_aFireModes.size())
+		return;
+	m_iCurFireMode = rt.fire_mode;
+	// Same rule as OnH_A_Chield: the actor fires in the selected mode, NPCs choose their own bursts
+	if (m_bHasDifferentFireModes && smart_cast<CActor*>(H_Parent()))
+		SetQueueSize(GetCurrentFireMode());
 }

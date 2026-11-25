@@ -417,6 +417,64 @@ static void full_memory_stats()
 #endif // DEBUG
 }
 
+// Checks the dynamic config sections (WEAPON_ENGINE_PLAN.md 5.1, change 2e) against a loaded weapon section
+class CCC_IniDynamicTest : public IConsole_Command
+{
+public:
+	CCC_IniDynamicTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		u32 failed = 0;
+		auto check = [&](bool ok, LPCSTR what)
+		{
+			Msg("%s [ini dynamic test] %s", ok ? "-" : "!", what);
+			if (!ok) ++failed;
+		};
+		LPCSTR base = (args && *args) ? args : "wpn_ak74";
+		if (!pSettings->section_exist(base))
+		{
+			Msg("! [ini dynamic test] base section [%s] is not loaded", base);
+			return;
+		}
+		const LPCSTR name = "ini_dynamic_test_i4000000";
+		const u32 count_before = pSettings->dynamic_section_count();
+
+		CInifile::DynamicItems items;
+		items.push_back({ "rpm", "123" });
+		items.push_back({ "ini_dynamic_test_new_key", "hello" });
+		check(pSettings->add_dynamic_section(name, base, items), "section built from the base");
+		check(pSettings->section_exist(name) && pSettings->dynamic_section_exist(name), "section_exist finds it");
+		check(pSettings->r_float(name, "rpm") == 123.f, "override replaces a base key");
+		check(!xr_strcmp(pSettings->r_string(name, "ini_dynamic_test_new_key"), "hello"), "override adds a key");
+		check(pSettings->line_exist(name, "ini_dynamic_test_new_key"), "line_exist sees the added key");
+		check(!xr_strcmp(pSettings->r_string(name, "inv_name"), pSettings->r_string(base, "inv_name")), "other keys come from the base");
+		check(pSettings->line_count(name) == pSettings->line_count(base) + 1, "line count is the base's plus the added key");
+		check(pSettings->r_float(base, "rpm") != 123.f || items.empty(), "the base section is unchanged");
+
+		CInifile::DynamicItems items2;
+		items2.push_back({ "rpm", "456" });
+		check(pSettings->add_dynamic_section(name, base, items2) && pSettings->r_float(name, "rpm") == 456.f, "rebuilding replaces the section");
+		check(!pSettings->line_exist(name, "ini_dynamic_test_new_key"), "the rebuilt section drops keys it no longer has");
+
+		check(!pSettings->add_dynamic_section("ini_dynamic_test", base, items), "a name without _i<digits> is refused");
+		check(!pSettings->add_dynamic_section("ini_dynamic_test_i4000001", "no_such_section_xyz", items), "a missing base is refused");
+		check(!pSettings->section_exist("ini_dynamic_test_i4000002"), "an unknown dynamic name does not exist");
+
+		check(pSettings->remove_dynamic_section(name) && !pSettings->section_exist(name), "removing it hides it");
+		check(pSettings->dynamic_section_count() == count_before, "dynamic section count is back where it was");
+
+		// Miss-path cost: section_exist on names that are not loaded
+		CTimer t;
+		t.Start();
+		u32 found = 0;
+		for (u32 i = 0; i < 100000; ++i)
+			found += pSettings->section_exist((i & 1) ? "no_such_section_xyz" : "no_such_section_i12") ? 1 : 0;
+		Msg("- [ini dynamic test] 100000 missed lookups: %.2f ms (%u found)", t.GetElapsed_sec() * 1000.f, found);
+
+		Msg("%s [ini dynamic test] %s", failed ? "!" : "-", failed ? "FAILED" : "all checks passed");
+	}
+};
+
 // Round trip and robustness checks for the per-item record (WEAPON_ENGINE_PLAN.md 4.1, 2a)
 class CCC_InstanceRecordTest : public IConsole_Command
 {
@@ -2576,6 +2634,18 @@ static void dump_record(LPCSTR side, const CSE_InstanceRecord& r)
 	for (const SInstancePart& p : r.parts)
 		Msg("-   part %u on %u/%s at %.3f: %s", u32(p.id), u32(p.parent), p.mount.c_str(), p.pos,
 			p.section.size() ? p.section.c_str() : "(emptied)");
+	if (r.runtime.valid)
+	{
+		string512 rounds = "";
+		for (u32 i = 0; i < r.runtime.rounds.size() && i < 120; ++i)
+		{
+			string16 t;
+			xr_sprintf(t, "%u", u32(r.runtime.rounds[i]));
+			xr_strcat(rounds, t);
+		}
+		Msg("-   runtime: fire mode %u, launcher mode %u, %u rounds by ammo type, first loaded first: %s",
+			u32(r.runtime.fire_mode), u32(r.runtime.gl_mode), u32(r.runtime.rounds.size()), rounds);
+	}
 }
 
 class CCC_InstanceRecordDump : public IConsole_Command
@@ -2589,6 +2659,12 @@ public:
 			return;
 		Msg("- [instance record] %s [%u]", item->object().cName().c_str(), item->object().ID());
 		dump_record("game side", item->instance_record());
+		const shared_str sect = item->instance_section();
+		Msg("- [instance record] config section [%s] (%s)", sect.c_str(), item->has_instance_section() ? "generated" : "base");
+		if (item->has_instance_section())
+			for (const SInstanceProp& p : item->instance_record().overrides)
+				Msg("-   [%s] %s = %s", sect.c_str(), p.key.c_str(),
+					pSettings->line_exist(sect, p.key) ? pSettings->r_string(sect, p.key.c_str()) : "(missing)");
 		CSE_ALifeInventoryItem* se = server_entity(item);
 		if (!se)
 		{
@@ -2683,6 +2759,7 @@ void CCC_RegisterCommands()
 	CMD4(CCC_Integer, "hud_ik_compensation", &ps_hud_ik_compensation, 0, 1);
 	CMD4(CCC_Integer, "hud_shared_model", &ps_hud_shared_model, 0, 1);
 	CMD1(CCC_InstanceRecordTest, "instance_record_test");
+	CMD1(CCC_IniDynamicTest, "ini_dynamic_test");
 	CMD1(CCC_InstanceRecordDump, "instance_record_dump");
 	CMD1(CCC_InstanceRecordSet, "instance_record_set");
 	CMD4(CCC_Float, "wpn_world_shot_motion_dist", &ps_wpn_world_shot_motion_dist, 0.f, 500.f);

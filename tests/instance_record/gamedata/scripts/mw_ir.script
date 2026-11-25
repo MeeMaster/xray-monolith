@@ -1,0 +1,396 @@
+-- Tests for phase 2 (WEAPON_ENGINE_PLAN.md 4 and 5): the instance record, its script API (2h)
+-- and its survival across save/load, NPCs, going offline and level changes (2i).
+-- Vanilla Anomaly + this engine build. Copy this file into gamedata\scripts (install.ps1 does it).
+--
+--   run_string mw_ir.api()          on the gun in your hands: checks every script function on
+--                                   both the game object and the server object, then removes
+--                                   what it added. Needs nothing else.
+--   run_string mw_ir.prepare()      marks the gun in your hands: rpm = 120, a mark override and a
+--                                   small part tree (a scope with a cover, two parts on one rail)
+--   run_string mw_ir.verify()       finds the marked gun wherever it is (hands, backpack, an NPC,
+--                                   online or offline) and checks its whole record
+--   run_string mw_ir.npc_give()     gives the marked gun to the NPC under the crosshair
+--   run_string mw_ir.offline_edit() while the marked gun is offline, sets an override through the
+--                                   server object; verify() then expects it on the game side too
+--   run_string mw_ir.snapshot("a")  writes every non-empty record in the game to
+--                                   appdata\mw_ir_a.txt; snapshot("b") after a save/load, then
+--   run_string mw_ir.compare("a", "b")  reports any record that changed
+--   run_string mw_ir.cleanup()      clears the marked gun's overrides and parts
+--
+-- Every result goes to the log as "[mw_ir] PASS ..." or "[mw_ir] FAIL ...".
+
+local MARK = "mw_ir_mark"
+local OVR = { rpm = "120", [MARK] = "1" }
+
+-- The part tree prepare() builds; paths are what get_parts() must report
+local PARTS = {
+	{ key = "scope", parent = nil, mount = "scope", section = "wpn_addon_scope", pos = 0 },
+	{ key = "cover", parent = "scope", mount = "cover", section = "mw_ir_cover", pos = 0 },
+	{ key = "light", parent = nil, mount = "top", section = "mw_ir_light", pos = 0.05 },
+	{ key = "laser", parent = nil, mount = "top", section = "mw_ir_laser", pos = 0.12 },
+}
+
+local fails, passes = 0, 0
+
+local function say(text)
+	printf("[mw_ir] %s", text)
+	if actor_menu and actor_menu.set_msg then
+		actor_menu.set_msg(1, "mw_ir: " .. text, 6)
+	end
+end
+
+local function check(ok, what)
+	if ok then
+		passes = passes + 1
+		printf("[mw_ir] PASS %s", what)
+	else
+		fails = fails + 1
+		printf("[mw_ir] FAIL %s", what)
+	end
+	return ok
+end
+
+local function begin()
+	fails, passes = 0, 0
+end
+
+local function finish(name)
+	say(string.format("%s: %d passed, %d failed", name, passes, fails))
+end
+
+local function gun()
+	local w = db.actor and db.actor:active_item()
+	if not (w and IsWeapon(w)) then
+		say("take a gun in your hands first")
+		return
+	end
+	return w
+end
+
+local function count(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	return n
+end
+
+local function near(a, b)
+	return math.abs(a - b) < 0.001
+end
+
+-- Every inventory item in the server registry, online or not, with a record API
+local function each_item(fn)
+	local sim = alife()
+	for id = 1, 65534 do
+		local se = sim:object(id)
+		if se then
+			local ok, size = pcall(function() return se:record_size() end)
+			if ok and size then
+				fn(se, id, size)
+			end
+		end
+	end
+end
+
+local function find_marked()
+	local found
+	each_item(function(se, id, size)
+		if size > 1 and se:get_override(MARK) then
+			found = found or se
+		end
+	end)
+	return found
+end
+
+---------------------------------------------------------------------------
+-- api(): 2h on the gun in hand, game object and server object side by side
+---------------------------------------------------------------------------
+
+function api()
+	local w = gun()
+	if not w then return end
+	begin()
+	local se = alife_object(w:id())
+	check(se ~= nil, "server object exists")
+	if not se then return finish("api") end
+
+	local base = w:section()
+	check(w:instance_section() ~= nil, "instance_section() returns a name: " .. tostring(w:instance_section()))
+	check(not string.find(base, "_i%d+$"), "section() is the base: " .. base)
+
+	-- Overrides: number, string and boolean values
+	check(w:set_override("mw_ir_num", 42) == true, "set_override with a number")
+	check(w:get_override("mw_ir_num") == "42", "number stored as \"42\": " .. tostring(w:get_override("mw_ir_num")))
+	check(w:set_override("mw_ir_flt", 0.25) == true, "set_override with a fraction")
+	check(w:get_override("mw_ir_flt") == "0.25", "fraction stored as \"0.25\": " .. tostring(w:get_override("mw_ir_flt")))
+	check(w:set_override("mw_ir_str", "abc") == true, "set_override with a string")
+	check(w:set_override("mw_ir_bool", true) == true, "set_override with a boolean")
+	check(w:get_override("mw_ir_bool") == "true", "boolean stored as \"true\"")
+	check(w:set_override("mw_ir_bad", {}) == false, "set_override with a table is refused")
+	check(w:get_override("mw_ir_bad") == nil, "refused value not stored")
+	check(w:get_override("mw_ir_missing") == nil, "missing key reads nil")
+
+	-- The server copy follows each game-side edit (event, 4.3)
+	check(se:get_override("mw_ir_str") == "abc", "server object sees the game-side edit")
+
+	local all = w:get_overrides()
+	check(all.mw_ir_num == "42" and all.mw_ir_str == "abc", "get_overrides() returns them")
+
+	-- Clearing: by nil, by the one-argument form, and with clear_override
+	check(w:set_override("mw_ir_num", nil) == true and w:get_override("mw_ir_num") == nil, "set_override(key, nil) clears")
+	check(w:set_override("mw_ir_flt") == true and w:get_override("mw_ir_flt") == nil, "set_override(key) clears")
+	check(w:clear_override("mw_ir_bool") == true and w:get_override("mw_ir_bool") == nil, "clear_override clears")
+	check(w:clear_override("mw_ir_bool") == false, "clearing a missing key returns false")
+
+	-- Server-side edit of an online item goes through the game object
+	check(se:set_override("mw_ir_se", "x") == true, "server-side set_override on an online item")
+	check(w:get_override("mw_ir_se") == "x", "game object sees the server-side edit")
+	check(se:clear_override("mw_ir_se") == true and w:get_override("mw_ir_se") == nil, "server-side clear_override")
+
+	-- Parts
+	local size0 = w:record_size()
+	local a = w:record_add_part(0, "mw_ir_mount", "mw_ir_part_a")
+	check(a > 0, "record_add_part returns an id: " .. a)
+	local b = w:record_add_part(a, "child", "mw_ir_part_b", 0.5)
+	check(b > a, "child part gets a new id: " .. b)
+	local r1 = w:record_add_part(0, "mw_ir_rail", "mw_ir_part_c", 0.1)
+	local r2 = se:record_add_part(0, "mw_ir_rail", "mw_ir_part_d", 0.2)
+	check(r1 > 0 and r2 > 0, "two parts on one mount, one added from the server object")
+	check(w:record_add_part(999, "x", "mw_ir_part_e") == 0, "part with a missing parent is refused")
+	check(w:record_size() > size0, "record_size grows: " .. size0 .. " -> " .. w:record_size())
+
+	local parts = w:get_parts()
+	local pb = parts["mw_ir_mount/child"]
+	check(parts["mw_ir_mount"] and parts["mw_ir_mount"].id == a, "path of a top-level part")
+	check(pb and pb.id == b and pb.parent == a and near(pb.pos, 0.5) and pb.section == "mw_ir_part_b", "path, parent, pos and section of a child part")
+	check(pb and near(pb.condition, 1) and pb.paintjob == "" and #pb.upgrades == 0 and count(pb.props) == 0, "defaults of a new part")
+	check(parts["mw_ir_rail#" .. r1] and parts["mw_ir_rail#" .. r2], "parts sharing a mount are named <mount>#<id>")
+	check(count(se:get_parts()) == count(parts), "server object lists the same parts")
+
+	check(w:record_remove_part(a) == 2, "removing a part removes its child too")
+	check(se:record_remove_part(r1) == 1, "server-side record_remove_part")
+	check(w:record_remove_part(r2) == 1, "remove the last test part")
+	check(w:record_remove_part(r2) == 0, "removing a missing part returns 0")
+	check(count(w:get_parts()) == 0 or not w:get_parts()["mw_ir_mount"], "test parts are gone")
+
+	check(w:clear_override("mw_ir_str"), "clean up")
+	finish("api")
+end
+
+---------------------------------------------------------------------------
+-- prepare() / verify(): the marked gun across save/load, NPCs, offline, level changes
+---------------------------------------------------------------------------
+
+function prepare()
+	local w = gun()
+	if not w then return end
+	begin()
+	-- Start clean so the part ids and paths are predictable
+	for _, p in pairs(w:get_parts()) do
+		if p.parent == 0 then w:record_remove_part(p.id) end
+	end
+	for k in pairs(w:get_overrides()) do w:clear_override(k) end
+
+	for k, v in pairs(OVR) do
+		check(w:set_override(k, v), "set " .. k .. " = " .. v)
+	end
+	local ids = {}
+	for _, p in ipairs(PARTS) do
+		local parent = p.parent and ids[p.parent] or 0
+		ids[p.key] = w:record_add_part(parent, p.mount, p.section, p.pos)
+		check(ids[p.key] > 0, "add " .. p.key)
+	end
+	finish("prepare")
+	say(string.format("marked %s [%d]. Its rpm override applies after a save/load. Run verify() any time.", w:section(), w:id()))
+end
+
+local function verify_record(get_override, get_parts, where)
+	for k, v in pairs(OVR) do
+		check(get_override(k) == v, where .. ": override " .. k .. " = " .. tostring(get_override(k)))
+	end
+	local parts = get_parts()
+	check(count(parts) == #PARTS, where .. ": " .. count(parts) .. " parts, expected " .. #PARTS)
+	local by_section = {}
+	for path, p in pairs(parts) do
+		by_section[p.section] = p
+		check(p.path == path, where .. ": path field matches key " .. path)
+	end
+	for _, e in ipairs(PARTS) do
+		local p = by_section[e.section]
+		local ok = p and p.mount == e.mount and near(p.pos, e.pos)
+		if ok and e.parent then
+			local parent = by_section[PARTS[1].section]
+			ok = parent and p.parent == parent.id
+		elseif ok then
+			ok = p.parent == 0
+		end
+		check(ok, where .. ": part " .. e.key .. (p and (" at " .. p.path) or " missing"))
+	end
+	local light, laser = by_section.mw_ir_light, by_section.mw_ir_laser
+	check(light and laser and parts["top#" .. light.id] and parts["top#" .. laser.id], where .. ": rail parts named top#<id>")
+	check(parts["scope/cover"] ~= nil, where .. ": child path scope/cover")
+end
+
+function verify()
+	begin()
+	local se = find_marked()
+	if not check(se ~= nil, "marked gun found (run prepare() first)") then
+		return finish("verify")
+	end
+	local id = se.id
+	local owner = se.parent_id ~= 65535 and alife_object(se.parent_id)
+	local obj = level.object_by_id(id)
+	say(string.format("marked gun [%d] %s, %s, held by %s", id, se:section_name(),
+		obj and "online" or "offline", owner and owner:name() or "nobody"))
+
+	check(not string.find(se:section_name(), "_i%d+$"), "server section is the base: " .. se:section_name())
+	verify_record(function(k) return se:get_override(k) end, function() return se:get_parts() end, "server")
+
+	local offline = se:get_override("mw_ir_offline")
+	if obj then
+		check(obj:section() == se:section_name(), "section() is the base: " .. obj:section())
+		local inst = obj:instance_section()
+		check(inst == se:section_name() .. "_i" .. id, "instance_section() is the generated section: " .. inst)
+		check(ini_sys:r_float_ex(inst, "rpm") == 120, "generated section reads rpm = 120")
+		check(ini_sys:r_float_ex(se:section_name(), "rpm") ~= 120, "base section keeps its own rpm")
+		verify_record(function(k) return obj:get_override(k) end, function() return obj:get_parts() end, "game")
+		if offline then
+			check(obj:get_override("mw_ir_offline") == offline, "offline edit reached the game side")
+		end
+	else
+		say("the gun is offline: only the server copy was checked")
+	end
+	finish("verify")
+end
+
+function npc_give()
+	local npc = level.get_target_obj and level.get_target_obj()
+	if not (npc and IsStalker(npc) and npc:alive()) then
+		say("aim at a living NPC first")
+		return
+	end
+	local w = gun()
+	if not w then return end
+	if not w:get_override(MARK) then
+		say("the gun in your hands is not marked; run prepare() first")
+		return
+	end
+	db.actor:transfer_item(w, npc)
+	say(string.format("gave the marked gun to %s. Walk away until they go offline (or change level), then verify()", npc:character_name()))
+end
+
+function offline_edit()
+	begin()
+	local se = find_marked()
+	if not check(se ~= nil, "marked gun found") then return finish("offline_edit") end
+	if level.object_by_id(se.id) then
+		say("the marked gun is online; move away from it first")
+		return
+	end
+	local stamp = tostring(math.floor(time_global() / 1000))
+	check(se:set_override("mw_ir_offline", stamp), "server-side set_override while offline")
+	check(se:get_override("mw_ir_offline") == stamp, "server copy holds it")
+	finish("offline_edit")
+	say("go back to the gun (or let it come online) and run verify()")
+end
+
+function cleanup()
+	local se = find_marked()
+	if not se then
+		say("no marked gun")
+		return
+	end
+	for _, p in pairs(se:get_parts()) do
+		if p.parent == 0 then se:record_remove_part(p.id) end
+	end
+	for k in pairs(se:get_overrides()) do se:clear_override(k) end
+	say(string.format("cleared gun [%d]; record is %d bytes", se.id, se:record_size()))
+end
+
+---------------------------------------------------------------------------
+-- snapshot() / compare(): every record in the game, before and after a save/load
+---------------------------------------------------------------------------
+
+local function path_of(name)
+	return getFS():update_path("$app_data_root$", "") .. "mw_ir_" .. name .. ".txt"
+end
+
+local function sorted_keys(t)
+	local keys = {}
+	for k in pairs(t) do keys[#keys + 1] = k end
+	table.sort(keys)
+	return keys
+end
+
+local function describe(se, size)
+	local out = { string.format("%d %s size=%d", se.id, se:section_name(), size) }
+	local ovr = se:get_overrides()
+	for _, k in ipairs(sorted_keys(ovr)) do
+		out[#out + 1] = string.format(" o %s=%s", k, ovr[k])
+	end
+	local parts = se:get_parts()
+	for _, path in ipairs(sorted_keys(parts)) do
+		local p = parts[path]
+		local props = {}
+		for _, k in ipairs(sorted_keys(p.props)) do props[#props + 1] = k .. "=" .. p.props[k] end
+		out[#out + 1] = string.format(" p %s id=%d parent=%d pos=%.4f sect=%s cond=%.3f paint=%s upg=%s props=%s data=%d",
+			path, p.id, p.parent, p.pos, p.section, p.condition, p.paintjob,
+			table.concat(p.upgrades, ","), table.concat(props, ","), p.data_size)
+	end
+	return table.concat(out, "\n")
+end
+
+function snapshot(name)
+	name = name or "a"
+	local lines, n = {}, 0
+	each_item(function(se, id, size)
+		if size > 1 then
+			lines[#lines + 1] = describe(se, size)
+			n = n + 1
+		end
+	end)
+	local f = io.open(path_of(name), "w")
+	if not f then
+		say("cannot write " .. path_of(name))
+		return
+	end
+	f:write(table.concat(lines, "\n"), "\n")
+	f:close()
+	say(string.format("%d non-empty records written to %s", n, path_of(name)))
+end
+
+local function read_snapshot(name)
+	local f = io.open(path_of(name), "r")
+	if not f then return end
+	local recs, cur = {}, nil
+	for line in f:lines() do
+		local id = line:match("^(%d+) ")
+		if id then
+			cur = id
+			recs[cur] = line
+		elseif cur then
+			recs[cur] = recs[cur] .. "\n" .. line
+		end
+	end
+	f:close()
+	return recs
+end
+
+function compare(a, b)
+	a, b = a or "a", b or "b"
+	begin()
+	local ra, rb = read_snapshot(a), read_snapshot(b)
+	if not (ra and rb) then
+		say("snapshot " .. (ra and b or a) .. " is missing")
+		return
+	end
+	for id, text in pairs(ra) do
+		if rb[id] ~= text then
+			check(false, "record " .. id .. " changed:\n" .. text .. "\n  became\n" .. tostring(rb[id]))
+		end
+	end
+	for id in pairs(rb) do
+		if not ra[id] then check(false, "record " .. id .. " is new:\n" .. rb[id]) end
+	end
+	check(fails == 0, string.format("%d records in %s, %d in %s", count(ra), a, count(rb), b))
+	finish("compare")
+end

@@ -11,6 +11,7 @@
 
 //#include "stdafx.h"
 #include "pch_script.h"
+#include "instance_section.h"
 #include "inventory_item.h"
 #include "inventory_item_impl.h"
 #include "inventory.h"
@@ -99,7 +100,10 @@ void CInventoryItem::Load(LPCSTR section)
 	ISpatial* self = smart_cast<ISpatial*>(this);
 	if (self) self->spatial.type |= STYPE_VISIBLEFORAI;
 
-	m_section_id._set(section);
+	// The base section stays the identity (trade, upgrades, scripts) when Load reads a generated one (5.3)
+	m_section_id = CInifile::is_dynamic_name(section) ? m_object->cNameSect() : shared_str(section);
+	if (CInifile::is_dynamic_name(section))
+		m_instance_section = section; // config_section() is valid from Load on
 	m_name = CStringTable().translate(pSettings->r_string(section, "inv_name"));
 	m_nameShort = CStringTable().translate(pSettings->r_string(section, "inv_name_short"));
 
@@ -338,6 +342,11 @@ bool CInventoryItem::Detach(const char* item_section_name, bool b_spawn_item)
 }
 
 /////////// network ///////////////////////////////
+shared_str CInventoryItem::instance_section() const
+{
+	return m_instance_section.size() ? m_instance_section : object().cNameSect();
+}
+
 // WEAPON_ENGINE_PLAN.md 4.3 (change 2c): the whole record goes to the server, which replaces its copy
 bool CInventoryItem::set_instance_record(const CSE_InstanceRecord& record)
 {
@@ -346,7 +355,10 @@ bool CInventoryItem::set_instance_record(const CSE_InstanceRecord& record)
 		Msg("! [instance record] %s [%u] has a record from a newer build; it is read-only", object().cName().c_str(), object_id());
 		return false;
 	}
+	const bool overrides_changed = !(m_instance.overrides == record.overrides);
 	m_instance = record;
+	if (overrides_changed)
+		m_instance_section = instance_section::build(object().cNameSect().c_str(), object_id(), m_instance); // 2f
 
 	NET_Packet P;
 	CGameObject::u_EventGen(P, GE_INSTANCE_RECORD, object_id());
@@ -376,6 +388,11 @@ BOOL CInventoryItem::net_Spawn(CSE_Abstract* DC)
 	if (!pSE_InventoryItem) return TRUE;
 
 	m_instance = pSE_InventoryItem->m_instance; // WEAPON_ENGINE_PLAN.md 4.3
+	// 2f: g_sv_Spawn built the generated section before Load; remember it while it exists
+	{
+		const shared_str sect = instance_section::name(object().cNameSect().c_str(), object_id());
+		m_instance_section = pSettings->dynamic_section_exist(sect.c_str()) ? sect : shared_str();
+	}
 
 	//!!!
 	m_fCondition = pSE_InventoryItem->m_fCondition;
@@ -397,6 +414,13 @@ BOOL CInventoryItem::net_Spawn(CSE_Abstract* DC)
 
 void CInventoryItem::net_Destroy()
 {
+	// 2f: the generated section lives as long as the online object
+	if (m_instance_section.size())
+	{
+		pSettings->remove_dynamic_section(m_instance_section.c_str());
+		m_instance_section = nullptr;
+	}
+
 	if (m_pInventory)
 	{
 		VERIFY(std::find(m_pInventory->m_all.begin(), m_pInventory->m_all.end(), this)==m_pInventory->m_all.end());

@@ -5640,6 +5640,12 @@
     <ClInclude Include="..\inventory_item.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
+    <ClInclude Include="..\instance_section.h">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClInclude>
+    <ClInclude Include="..\instance_record_script.h">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClInclude>
     <ClInclude Include="..\inventory_item_impl.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
@@ -9255,6 +9261,12 @@
       <Filter>Core\Client\Objects\inventory\EatableItemObject</Filter>
     </ClCompile>
     <ClCompile Include="..\inventory_item.cpp">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\instance_section.cpp">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\instance_record_script.cpp">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClCompile>
     <ClCompile Include="..\inventory_item_upgrade.cpp">

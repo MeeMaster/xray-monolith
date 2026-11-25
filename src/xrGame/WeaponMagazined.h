@@ -236,6 +236,9 @@ public:
 
 	virtual void save(NET_Packet& output_packet);
 	virtual void load(IReader& input_packet);
+	virtual void instance_runtime_capture(SInstanceRuntime& rt) const;
+	virtual void instance_runtime_apply(const SInstanceRuntime& rt);
+	virtual bool instance_runtime_is_default(const SInstanceRuntime& rt) const;
 
 protected:
 	virtual bool install_upgrade_impl(LPCSTR section, bool test);

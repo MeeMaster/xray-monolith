@@ -10,6 +10,24 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <atomic>
+
+// Dynamic sections (WEAPON_ENGINE_PLAN.md 5.1, change 2e); the functions are at the end of the file
+struct CInifile::DynamicStore
+{
+	xrCriticalSection lock;
+	xr_map<shared_str, Sect*> live;     // lower-case name -> section; nodes never move
+	xr_vector<Sect*> retired;           // replaced or removed; freed by dynamic_sections_collect
+	std::atomic<u32> count{0};          // live.size(), read without the lock on the miss path
+
+	~DynamicStore()
+	{
+		for (auto& it : live)
+			xr_delete(it.second);
+		for (Sect* s : retired)
+			xr_delete(s);
+	}
+};
 #include "mezz_stringbuffer.h"
 
 XRCORE_API CInifile const* pSettings = NULL;
@@ -222,6 +240,8 @@ CInifile::CInifile(LPCSTR szFileName,
 
 CInifile::~CInifile()
 {
+	if (m_dynamic)
+		xr_delete(m_dynamic);
 	if (!m_flags.test(eReadOnly) && m_flags.test(eSaveAtEnd))
 	{
 		if (!save_as())
@@ -1563,7 +1583,9 @@ bool CInifile::save_as(LPCSTR new_fname)
 BOOL CInifile::section_exist(LPCSTR S) const
 {
 	RootCIt I = std::lower_bound(DATA.begin(), DATA.end(), S, sect_pred);
-	return (I != DATA.end() && xr_strcmp(*(*I).Name, S) == 0);
+	if (I != DATA.end() && xr_strcmp(*(*I).Name, S) == 0)
+		return TRUE;
+	return dynamic_section_exist(S); // 2e: a runtime section (WEAPON_ENGINE_PLAN.md 5.1)
 }
 
 BOOL CInifile::line_exist(LPCSTR S, LPCSTR L) const
@@ -1611,6 +1633,8 @@ CInifile::Sect& CInifile::r_section(LPCSTR S) const
 	RootCIt I = std::lower_bound(DATA.begin(), DATA.end(), section, sect_pred);
 	if (!(I != DATA.end() && xr_strcmp(*(*I).Name, section) == 0))
 	{
+		if (Sect* dynamic = is_dynamic_name(section) ? find_dynamic(section) : nullptr)
+			return *dynamic; // 2e: a runtime section (WEAPON_ENGINE_PLAN.md 5.1)
 		Debug.fatal(DEBUG_INFO, "Can't open section '%s'. Please attach [*.ini_log] file to your bug report", S);
 	}
     const CInifile::Sect& res = *I;
@@ -2047,4 +2071,133 @@ bool CInifile::remove_section(LPCSTR S)
 
 	DATA.erase(I);
 	return true;
+}
+
+//--------------------------------------------------------------------------------------------------------
+// Dynamic sections (WEAPON_ENGINE_PLAN.md 5.1, change 2e)
+//--------------------------------------------------------------------------------------------------------
+bool CInifile::is_dynamic_name(LPCSTR S)
+{
+	if (!S)
+		return false;
+	const u32 len = xr_strlen(S);
+	u32 i = len;
+	while (i > 0 && isdigit(u8(S[i - 1])))
+		--i;
+	// at least one digit, preceded by "_i" and something before that
+	return i < len && i >= 3 && (S[i - 1] == 'i' || S[i - 1] == 'I') && S[i - 2] == '_';
+}
+
+CInifile::Sect* CInifile::find_dynamic(LPCSTR lower_name) const
+{
+	DynamicStore* store = m_dynamic;
+	if (!store || !store->count.load(std::memory_order_acquire))
+		return nullptr;
+	xrCriticalSectionGuard guard(store->lock);
+	auto it = store->live.find(shared_str(lower_name));
+	return it != store->live.end() ? it->second : nullptr;
+}
+
+bool CInifile::dynamic_section_exist(LPCSTR name) const
+{
+	if (!is_dynamic_name(name))
+		return false;
+	char lower[256];
+	xr_strcpy(lower, sizeof(lower), name);
+	strlwr(lower);
+	return find_dynamic(lower) != nullptr;
+}
+
+u32 CInifile::dynamic_section_count() const
+{
+	return m_dynamic ? m_dynamic->count.load(std::memory_order_acquire) : 0;
+}
+
+bool CInifile::add_dynamic_section(LPCSTR name, LPCSTR base, const DynamicItems& items) const
+{
+	if (!is_dynamic_name(name) || xr_strlen(name) >= 255 || !base || !*base)
+	{
+		Msg("! [ini] dynamic section '%s': the name must end in _i<digits>", name ? name : "");
+		return false;
+	}
+	char lower[256];
+	xr_strcpy(lower, sizeof(lower), name);
+	strlwr(lower);
+	char lower_base[256];
+	xr_strcpy(lower_base, sizeof(lower_base), base);
+	strlwr(lower_base);
+
+	RootCIt S = std::lower_bound(DATA.begin(), DATA.end(), lower, sect_pred);
+	if (S != DATA.end() && xr_strcmp(*S->Name, lower) == 0)
+	{
+		Msg("! [ini] dynamic section '%s': a loaded section has that name", name);
+		return false;
+	}
+	RootCIt B = std::lower_bound(DATA.begin(), DATA.end(), lower_base, sect_pred);
+	if (B == DATA.end() || xr_strcmp(*B->Name, lower_base) != 0)
+	{
+		Msg("! [ini] dynamic section '%s': base section '%s' is not loaded", name, base);
+		return false;
+	}
+
+	// The loaded base is already flattened (the loader resolved its parents), so a copy is complete
+	Sect* sect = xr_new<Sect>();
+	sect->Name = lower;
+	sect->Data = B->Data;
+	for (const DynamicItem& di : items)
+	{
+		if (!di.key.size())
+			continue;
+		auto it = std::lower_bound(sect->Data.begin(), sect->Data.end(), *di.key, item_comparator());
+		if (it != sect->Data.end() && xr_strcmp(*it->first, *di.key) == 0)
+		{
+			it->second = di.value;
+			it->filename = name;
+		}
+		else
+		{
+			Item I;
+			I.first = di.key;
+			I.second = di.value;
+			I.filename = name;
+			sect->Data.insert(it, I);
+		}
+	}
+
+	if (!m_dynamic)
+		m_dynamic = xr_new<DynamicStore>();
+	xrCriticalSectionGuard guard(m_dynamic->lock);
+	Sect*& slot = m_dynamic->live[shared_str(lower)];
+	if (slot)
+		m_dynamic->retired.push_back(slot);
+	slot = sect;
+	m_dynamic->count.store(u32(m_dynamic->live.size()), std::memory_order_release);
+	return true;
+}
+
+bool CInifile::remove_dynamic_section(LPCSTR name) const
+{
+	if (!m_dynamic || !is_dynamic_name(name))
+		return false;
+	char lower[256];
+	xr_strcpy(lower, sizeof(lower), name);
+	strlwr(lower);
+	xrCriticalSectionGuard guard(m_dynamic->lock);
+	auto it = m_dynamic->live.find(shared_str(lower));
+	if (it == m_dynamic->live.end())
+		return false;
+	m_dynamic->retired.push_back(it->second);
+	m_dynamic->live.erase(it);
+	m_dynamic->count.store(u32(m_dynamic->live.size()), std::memory_order_release);
+	return true;
+}
+
+void CInifile::dynamic_sections_collect() const
+{
+	if (!m_dynamic)
+		return;
+	xrCriticalSectionGuard guard(m_dynamic->lock);
+	for (Sect* s : m_dynamic->retired)
+		xr_delete(s);
+	m_dynamic->retired.clear();
 }

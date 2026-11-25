@@ -340,6 +340,36 @@ public:
 
 	void remove_line(LPCSTR S, LPCSTR L);
 	bool remove_section(LPCSTR S);
+
+	// Dynamic sections (WEAPON_ENGINE_PLAN.md 5.1, change 2e): sections built at runtime for one object, such as
+	// a weapon's generated section. Readers see them through r_section, section_exist and everything built on
+	// those, after the normal lookup misses, so the loaded sections are untouched and reads of them cost nothing
+	// extra. They are stored apart from DATA (node based, behind a lock), never appear in sections(), and are
+	// callable on a const CInifile such as pSettings.
+	// Names must end in "_i<digits>" (is_dynamic_name), so a typo can never shadow a real section.
+	struct DynamicItem
+	{
+		shared_str key;
+		shared_str value;
+	};
+	typedef xr_vector<DynamicItem> DynamicItems;
+
+	static bool is_dynamic_name(LPCSTR S);
+	// Builds [name] as a flattened copy of the loaded section [base], then applies items (replacing or adding
+	// keys). Replaces an existing dynamic section of that name. False if the name is not a dynamic name, a
+	// loaded section has that name, or base is not a loaded section.
+	bool add_dynamic_section(LPCSTR name, LPCSTR base, const DynamicItems& items) const;
+	bool remove_dynamic_section(LPCSTR name) const;
+	bool dynamic_section_exist(LPCSTR name) const;
+	u32 dynamic_section_count() const;
+	// Frees replaced and removed sections. A Sect& from r_section stays valid until this runs, so call it where
+	// no read is in progress (once per frame).
+	void dynamic_sections_collect() const;
+
+private:
+	struct DynamicStore;
+	mutable DynamicStore* m_dynamic = nullptr;
+	Sect* find_dynamic(LPCSTR lower_name) const;
 };
 
 // Main configuration file
