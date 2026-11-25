@@ -2,7 +2,7 @@
 
 How to change xray-monolith so that every weapon is an independent object: one base model, parts as separate models fitted at runtime, and a per-weapon record that rebuilds the gun on save and load. It builds on [WEAPON_MODELS.md](WEAPON_MODELS.md), [WEAPON_OBJECTS.md](WEAPON_OBJECTS.md) and the Part_bench mod (`../part_bench`, its `AGENTS.md` and `mw_*` scripts).
 
-Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2). Sizes are estimates from reading the code.
+Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), and 1d implemented and partly tested in game (section 7.3). Sizes are estimates from reading the code.
 
 ---
 
@@ -16,7 +16,8 @@ Agreed on 2026-11-24:
 | What a fitted part keeps | **Embedded state**: section, condition, installed upgrades, and a small per-part data blob. Detaching respawns a real item with that state. No entity exists while the part is fitted. |
 | Existing content | **Replace everywhere.** Every firearm moves to the new model. Baked combo sections (`wpn_ak74_kobra`), addon flags and `alife_clone_weapon` swaps are mapped onto base + parts, for new spawns and for old saves. |
 | Engine vs. Lua | **Engine core, Lua edges.** The engine owns the record, persistence, mount resolving, part drawing, stats, aim and gameplay effects. Lua keeps the bench UI, hand poses and shims for other mods, through new engine APIs. |
-| How changes apply | **In-place refresh only** (agreed 2026-11-24). Every part change updates the record, then `ReloadConfig` recomputes the same live object from base + record (section 6). There is no incremental "add onto the live object" path, so the live gun always matches what a reload would rebuild. |
+| How changes apply | **In-place refresh only** (agreed 2026-11-24). Every part change updates the record, then `ReloadConfig` recomputes the same live object from base + record (section 6). There is no incremental "add onto the live object" path, so the live gun always matches what a reload would rebuild. A change that only moves parts takes a short path inside `ReloadConfig`, which must give the same result as a full rebuild (section 8.3). |
+| Rails and free placement | **Supported by the engine, not shipped as gameplay** (agreed 2026-11-25). Mounts can be rails with a length, parts sit at a position on them, and several parts can share one rail. The engine provides the data, record, resolver rules and script API. Moving parts along rails in the UI is left to mods (section 8.3). |
 
 Assumptions made without asking (change them if wrong):
 
@@ -24,7 +25,7 @@ Assumptions made without asking (change them if wrong):
 - **"One model" means one file and one instance** (revised 2026-11-24). First person and third person draw the same model instance with the same pose, bone visibility, parts and shaders. Only the transform and the HUD pass draw state (FOV, depth range) differ per view (section 7).
 - **Part_bench's data format is the starting schema.** Keys such as `mw_mounts`, `mw_defaults`, `mount_type`, `accepts`, `positions`, `blocks`, `long`, `pair`, `canted` and `aim_bone` are kept, so the existing part `.ltx` files and meshes keep working.
 - **Single-player only.** Network sync is kept just correct enough for the local client/server pair.
-- **Every `CWeapon` gets a record.** Only firearms have mounts. Knives, grenades and binoculars carry an empty record.
+- **Every `CWeapon` and every part item gets a record.** Only firearms have mounts. Knives, grenades and binoculars carry an empty record. A loose part item uses its record for state that must survive fitting and removal, such as its paintjob (section 13); the rest of a part's state still moves into the gun's record when it is fitted.
 
 ---
 
@@ -36,7 +37,7 @@ Assumptions made without asking (change them if wrong):
 Weapon object (one server entity, one ID for its whole life)
   base section        wpn_ak74                    unchanged, from the .ltx
   instance record     saved with the entity       (section 4)
-    parts             mount path -> embedded part
+    parts             list of embedded parts, each on a mount at a position (section 8.3)
     overrides         key -> value                engine or script keys
   derived at spawn
     generated section [wpn_ak74_i10323]:wpn_ak74  base + part effects + overrides
@@ -73,9 +74,23 @@ role          = sight                  ; new: sight | muzzle | launcher | magazi
 modifiers     = mw_part_kobra_stats    ; new name for Part_bench's `upgrade`; same property syntax
 sight_section = mw_part_kobra          ; zoom, scope texture, 3DSS lens, Mark Switch
 inv_item      = mw_part_kobra          ; new: the inventory item it comes from and returns to
+
+[mw_m4_tac_mount_top]                  ; new: a rail (section 8.3)
+bone     = mnt_top                     ; rail start; the rail runs along the mount's +Z
+length   = 0.26
+accepts  = picatinny
+stops    = near_top:0.12, far_top:0.233 ; named positions; old point-mount names still resolve
+
+[mount_type_picatinny]                 ; new: shared data per rail standard
+pitch    = 0.01001                     ; slot spacing in metres; 0 = slide freely (dovetail)
+
+[mw_part_aimpoint]
+span     = -0.02, 0.025                ; new: rail length the part covers, rear and front of its origin
 ```
 
 A part can provide mounts of its own (`mw_mounts` on the part), so the fitted parts form a tree addressed by paths such as `handguard/near_bottom`.
+
+Schema rule for moddability: every extension point is its own section or its own key, never a position inside a value. DLTX can append to lists (`>mw_mounts = rail_left`), patch one key, and override or delete a section, but it can't edit one field inside a packed value. No part of the engine may cap the number of mounts, parts or stops.
 
 ### 2.3 Runtime pipeline
 
@@ -117,6 +132,7 @@ Each workstream below lists what changes, where, what Part_bench already has, an
 | W11 | ALife, NPCs, trade | S–M | W2, W5 |
 | W12 | Migration of existing content and saves | L | W2–W9 |
 | W13 | Script API, callbacks, debug tools | M | grows with each workstream |
+| W14 | Paintjobs: per-gun and per-part texture sets | S–M | W1, W2, W4; W6 for parts |
 
 ---
 
@@ -131,17 +147,26 @@ A new struct, `CSE_InstanceRecord`, held by `CSE_ALifeInventoryItem` so other it
 ```
 u8   version
 u16  override count, then (stringZ key, stringZ value) each
+u16  next part id
 u8   part count, then per part:
-       stringZ path          "scope", "handguard/near_bottom"
+       u16    id             stable for the part's life on this gun; never reused
+       u16    parent id      0 = the gun itself
+       stringZ mount         mount name on the parent, "scope", "top"
+       f32    pos            position along the mount in metres; 0 on a point mount
+       u8     prop count, then (stringZ key, stringZ value) each
+                             placement and mod state the engine and resolve callbacks can read (8.3)
        stringZ section       "" = emptied on purpose (Part_bench's `false`)
        u8     condition      quantised like m_fCondition in UPDATE packets
        u8     upgrade count, then stringZ ids
        u16    blob size, then bytes   part-owned data: battery charge, reticle mark, light on/off
+       stringZ paintjob      "" = none; the part's own paintjob (section 13)
 runtime block (for rebuilds and save):
        u8 fire mode, u8 GL mode, per-round ammo type list
 ```
 
-Paths that are absent fall back to `mw_defaults`, as in `mw_resolve`. An unmodified gun has an empty record and costs a few bytes.
+Mounts that hold no entry fall back to `mw_defaults`, as in `mw_resolve`. An unmodified gun has an empty record and costs a few bytes.
+
+The record is a list keyed by part id, not a map keyed by mount path, because a rail can hold several parts (section 8.3). Paths such as `handguard/near_bottom` are derived from the parent chain for the API. A part on a rail is addressed as `top#4`, its mount name plus its id. Unknown props and a higher record version must survive a load and save, so mods can store their own placement state without a format change.
 
 ### 4.2 Writing it into the save
 
@@ -292,6 +317,42 @@ After 1a, an animated gun model with no motion playing shows its parts in their 
 - **NPC guns** have no HUD binding. They show the bind pose (1a), or a short motion on shots (1g).
 - **Physics.** The single model is the world export with bone shapes, so dropping works. The HUD view ignores the shapes.
 
+**Implemented 2026-11-24 (1b). Tested in game 2026-11-25** with the `tests/bind_pose` gun, `hud_shared_model 1` and `rs_skeleton_bind_fallback 1`:
+- Reload and shooting motions play in first person and in third person (F1).
+- A dropped gun keeps its parts at the bind pose and picks up normally.
+- No crash and the correct model after: level change while holding the gun, save and load while holding it, selling it and buying it back, and giving it to an NPC (`npc_give`), who carries it.
+- The test gun needs two-field aliases (`anm_reload = ak_74_reload1, reload`) because the vanilla hand motion names don't exist in its motion file. With one field the gun falls back to `idle` and looks static.
+- A first third-person run looked static with either setting; a later run with a freshly spawned gun animated. The likely cause was a gun spawned while `hud_shared_model` was 0 (it persists in `user.ltx`), but this was not confirmed.
+- **Opt-in rule.** `attachable_hud_item::load` (`xrGame/player_hud.cpp`) shares the owner's world visual when all of these hold:
+  - the item is a `CWeapon`;
+  - the world visual is animated and has an `idle` motion;
+  - the HUD section's `item_visual` is missing or names the same file.
+- **Fallback.** Anything else, including every vanilla gun, still loads `item_visual` as before.
+- **Console toggle.** `hud_shared_model` (default 1) applies to HUD data created after the change.
+- **Ownership.** The shared model is flagged `m_model_shared`, and the destructor never deletes it.
+- **Error messages** use `m_visual_name` instead of reading `item_visual`.
+- **Skip marker.** It is set on the model in `attachable_hud_item::render`.
+- **Leaving the hands** (`release_shared_model`, called from `CHudItem::on_b_hud_detach` and the destructor):
+  - clears the root override, unless a physics callback owns the root;
+  - closes all cycles, so on the back, on the ground and after a drop the world view shows the bind pose (1a).
+  - It only touches the model while it is still the owner's live visual, because `net_Destroy` deletes the visual before the item is destroyed.
+- **One callback slot.** A kinematics has a single update-callback slot, and the world list (`CGameObject`) and HUD list (`CHudItem`) both use it, for example script attachments' visbox updates. On a shared model, both `SetKinematicsCallback` functions install `VisualCallbackShared` (`HudItem.cpp`), which runs both lists.
+- **Not handled yet:**
+  - the world visual changing while HUD data exists (only `net_Spawn` sets it today);
+  - `remove_hud_model` dropping the HUD callbacks (as it already did with two models);
+  - the two bone-visibility functions both writing the one model: done in 1d, below.
+
+**Implemented 2026-11-25 (1d). Tested in game 2026-11-25 on a vanilla gun:** scope and grenade launcher show in first and third person. Not yet checked: silencer, a dropped gun, RPG-7 reload.
+- **One rule.** `CWeapon::ApplyAddonsVisibility(K, hud_copy)` (`Weapon.cpp`) holds the scope, silencer and launcher bone rule. `UpdateAddonsVisibility` applies it to the world model, and to a separate first-person model through `UpdateHUDAddonsVisibility` (still called every frame from `UpdateCL`). A shared model is the world model, so it gets the rule once and the per-frame first-person pass skips it.
+- **Kept per copy, on purpose:**
+  - a separate first-person copy still asserts on a missing attachable bone, and the world model still ignores one;
+  - with `modular_attachments`, a separate first-person copy hides `wpn_scope` and switches `wpn_scoped_hide` / `wpn_scoped_unhide`, because the scope is drawn as its own HUD item. These guns no longer share a model (`shareable_world_visual`), since the two views need different bones.
+- **Small change for every gun:** the world model now also shows the addon bone of a permanent addon. Before, only the first-person copy did this; bones start visible, so this should change nothing visible.
+- **RPG-7:** on a shared model the rocket bone uses the first-person rule (shown while reloading) in every view, since the reload is animated in every view. Two-model guns are unchanged.
+- **Already one-model safe:** the bullet bones (`HUD_VisualBulletUpdate`) and the underbarrel grenade bone (`UpdateGrenadeVisibility`) write only while in first person. On a shared model their last state carries over to third person and to a dropped gun.
+- **Legacy only (decided 2026-11-25).** New guns ship every part, built-in ones included, as a separate part model (W6), so their models have no `wpn_scope` / `wpn_silencer` / `wpn_launcher` bones, and the world-model rule skips missing bones silently. The rule stays unchanged so old guns keep working, and it gets no new features. When parts land, a part-based gun turns it off with the existing `use_engine_attachments = false`, or W7 skips it automatically for guns with a part record.
+- **Test:** the bind-pose test gun has no addon bones, so this is a regression test on vanilla guns: attach and detach a scope, silencer and launcher, in first and third person and dropped; an RPG-7 reload in first and third person.
+
 ### 7.4 One shader set
 
 The load-time HUD flag (`hud_loading`) has exactly two effects, both in `Layers/xrRender/ResourceManager.cpp`, and both only matter with Screen Space Shaders (SSS) on:
@@ -313,6 +374,13 @@ What this costs, with SSS on only:
 | The held gun's glass uses `ssfx_glass` refraction | Needs a visual test in the HUD pass, because HUD depth is squeezed into the near range. If it looks wrong, skip refraction per draw in the HUD pass |
 
 Without SSS, nothing changes visually.
+
+**Implemented 2026-11-25 (1c). Runs without problems on plain Anomaly; not yet checked with SSS.** Reading the code changed the scope:
+- **The lens exclusion is dead code.** `hud_disabled` (`ResourceManager.cpp:263`) has two readers, the HUD mask insert in `r__dsgraph_build.cpp` and `hud_node` in `r__dsgraph_render.cpp`. Both are commented out: SSS 23 retired the HUD mask (`r__dsgraph_structure.h:64`). Nothing needs moving to draw time. The flag-setting code is left in place; it has no effect.
+- **The shared gun already loads plain.** Since 1b it is the world visual, which never had the HUD flag. So with SSS it already has no HUD raindrops and uses `ssfx_glass` in first person (the costs in the table above). The glass still needs a visual check with SSS.
+- **`MotionExists`** (`level_script.cpp`, Lua `motion_exists`) no longer sets `hud_loading`. A probe can no longer give a model's world copies HUD shaders through the pool.
+- **The two-model fallback** (`attachable_hud_item::load`) loads `item_visual` with the HUD flag only when it is a separate file. When it names the owner's world model (a gun that can't share, for example one with no `idle` motion), it loads plain, so the pool stays consistent.
+- **Kept with the HUD flag:** separate first-person files (every vanilla gun keeps its raindrops), the hands, and the script animation item model.
 
 ### 7.5 Changes
 
@@ -350,6 +418,8 @@ Keep Part_bench's rules exactly, and port `mw_resolve_test.script` as a test sui
 - `long` / `far_*`, `pair` / `pair_only`, `canted` and `canted_on_canted`
 - `align_bone` and `fix`
 
+Added on top of Part_bench: rails, positions, span overlap, stops and placement-only changes (section 8.3).
+
 **Bind poses:** `mw_ogf.script` parses OGF files to read bone bind poses. The engine already loads the model, so it reads them from the kinematics' bone data. The Lua OGF parser, and its guessed rotation order, go away.
 
 ### 8.2 W6: Rendering
@@ -367,9 +437,46 @@ Implementation:
 - **Lens bones:** the engine handles `lens_show_bone` / `lens_hide_bone` per view and aim state, as Part_bench's `mw_aim` does today.
 - **Physics:** a dropped gun's part attachments add collision geometry through the existing attachment physics, so a long scope doesn't sink into the ground.
 - **Lights and lasers:** the engine creates the part's `attachment_script_light` from its `light` section. With one tree, a part has one light. It is placed from the HUD transform in first person and from the world transform otherwise, which replaces `mw_light`'s pair of HUD and world lights. The laser beam's `models_laserbeam` surfaces draw only in the HUD pass today; check that this still holds once parts use world shaders. Switching on and off and batteries stay in Lua, through an engine on/off call and the part's data blob.
-- **Performance:** NPC guns now draw 1 + N models. Measure early (section 16). If needed, skip cosmetic parts beyond a distance, and later merge a gun's static parts into one draw.
+- **Performance:** NPC guns now draw 1 + N models. Measure early (section 17). If needed, skip cosmetic parts beyond a distance, and later merge a gun's static parts into one draw.
 
 **Done when:** Part_bench's spike 9 checklist passes with no `mw_render` script loaded: one tree of parts showing in first and third person, nested parts, dropped guns, NPC guns, offline and back, save/load.
+
+### 8.3 Rails, placement and extension points for mods
+
+**Goal:** the engine ships fixed mount points, but a mod can add rails, slide parts along them, put several parts on one rail, or add its own placement rules, without engine changes or a new save format. The engine doesn't need to ship rail editing, only to avoid blocking it. The parts that are expensive to change after release are the record format (4.1) and the resolver's contract. Everything else here can grow later.
+
+**A point mount is a rail of length 0.** A mount section takes three optional keys:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `length` | Rail length in metres along the mount's +Z, starting at `bone` + `offset` | `0`, a point mount |
+| `stops` | Named positions, `name:pos, ...` | none |
+| `default_pos` | Where a part goes when nothing else says | first stop, else `0` |
+
+A `[mount_type_<name>]` section holds data shared by one rail standard: `pitch`, the slot spacing that positions snap to. `0` means the part slides freely, as on dovetail. A part takes `span = rear, front`, the stretch of rail it covers relative to its origin. Without `span` it covers a point.
+
+Every existing gun and part stays valid with no changes. Point mounts are rails of length 0 and parts without `span` are points, so the current rules give the same results.
+
+**Placement.** A part's transform is `mount frame × translate(0, 0, pos) × part local`. `pos` comes from the record, is snapped to the mount type's `pitch`, and is clamped so the part's span stays on the rail. That one rule covers sliding along a rail and several parts on one rail. Nested mounts on a part move with it.
+
+**Stops keep the old mount names working.** Part_bench guns model one rail as separate point mounts, such as the M4's `near_top` and `far_top`. A gun author can merge them into one `top` rail with `stops = near_top:0.12, far_top:0.233`. A part's `positions` list then resolves each name either as a whole rail (`top`: anywhere on it) or as a stop (`near_top`: on `top`, at that position). Old records that name `near_top` load onto the rail at that stop. Merging is optional, and both forms can exist on one gun.
+
+**Clashes:**
+
+- On one rail, two parts clash when their spans overlap.
+- Between mounts, `blocks` keeps working with whole mount names, and also takes a range, `top:0.20-0.26`. This covers a long scope that reaches over the front of a handguard rail.
+- `hides` applies while the mount holds any part. Rules that depend on position, such as hiding only the front sight post, go through the resolve callback below.
+- Part_bench's `long` / `far_*` and `pair` rules stay as they are. Where a gun uses stops, they read the stop names.
+
+**Placement changes vs. topology changes.** The resolver returns its nodes with a flag that says whether the set of parts and their mounts changed, or only `pos` and placement props changed. `ReloadConfig` takes the short path for a placement-only change: update each moved attachment's offset, recompute aim (W8) and write the new aim keys into the generated HUD section and the live `hud_item_measures`. It skips the generated section's stats, `CWeapon::Load` and the part tree rebuild. The short path must give the same result as a full rebuild. A debug check runs both and compares them (section 17). This keeps the "in-place refresh only" decision: the live gun still always matches what a reload would rebuild.
+
+**Script contract.** A mod that edits placement needs only the calls in section 14: read the rails and what occupies them (`get_mounts`), test a fit (`can_fit` with a position), commit (`fit_part` with a position, `move_part`), and store its own state per part (`get_part_prop` / `set_part_prop`). The engine's fit by drag and drop and the bench use `default_pos` and never move a part. They are one user of the API, and a rail mod is another.
+
+**Resolve callback.** `on_part_resolve(wpn, node, ctx)` runs for each node during a rebuild. It may refuse the node with a reason or add a local transform, such as rotating a part from a `rot` prop. To keep rebuilds reproducible, it may read only the record (props included) and config, not game state or time. The same record must always give the same gun. The callback receives nothing unless a script registers it, so it costs nothing in an unmodded game.
+
+**What stays out of the engine:** the dragging UI, rules for how far an eye-relief scope may sit from the eye, and any per-mod placement data. These live in Lua, in props and in mod `.ltx` sections.
+
+**Done when:** a test script fits two parts on one rail at different positions, moves one along it, sees `can_fit` refuse an overlapping position, and the configuration survives save/load. A gun with only point mounts and old records gives the same nodes as before this change.
 
 ---
 
@@ -421,6 +528,7 @@ Port `mw_aim.script` into the generated HUD section:
 ### 10.2 W10: Icons
 
 - Extend the weapon cell item (`CUIWeaponCellItem`) from three fixed addon layers to one layer per fitted part: the part's icon drawn at the gun's `mw_icon_<mount>` anchor minus the part's `icon_anchor`.
+- On a rail, the part's icon shifts by its `pos` times the gun's `mw_icon_scale` (pixels per metre, new key). The `mw_icon_<mount>` anchor is the rail start.
 - Base icons must show the stripped gun. Part_bench's plan (render the stripped gun and every part from Blender with one fixed camera per gun) produces matching anchors.
 - Later option: render the icon from the 3D model at runtime (`UI3dStatic` exists), which removes anchors entirely.
 
@@ -471,20 +579,93 @@ Size this per gun family before promising "everywhere" in one release. The uncon
 
 ---
 
-## 13. W13: Script API
+## 13. W14: Paintjobs
+
+**Goal:** a gun and each of its parts can carry a paintjob, meaning a set of replacement textures. The paintjob is saved with the object, stays on a part when it moves between guns, and looks the same in first and third person.
+
+### 13.1 What exists today
+
+`obj:set_shader(id, shader, texture, hud)` / `reset_shader` (`xrGame/script_game_object.cpp:1658`) already rebuild the shader of one sub-mesh, or all of them, on one model instance. Instances don't share the change, and the model pool restores the default texture (`Layers/xrRender/ModelPool.cpp:327`). Mods can't use it for paintjobs because:
+
+- the world and HUD models are separate, so every change needs two calls;
+- the HUD model is recreated on every attach, which drops the change;
+- nothing is saved, so a mod must track skins itself and reapply them on every spawn, load and drop.
+
+W1 (one instance) fixes the first two. The record and `ReloadConfig` (W2, W4) fix the third.
+
+### 13.2 Data
+
+A paintjob is a section that maps **default texture → replacement texture**. Keying on the texture the model file names (`dbg_texture_def`), not on the sub-mesh index, means one paintjob can cover a gun and its parts, and keeps working if a mesh is re-exported with its sub-meshes in a different order.
+
+```ini
+[pj_ak74_tiger]
+textures      = wpn\wpn_ak74_body:wpn\skins\ak74_tiger_body, wpn\wpn_ak74_wood:wpn\skins\ak74_tiger_wood, wpn\mw_kobra:wpn\skins\kobra_tiger
+shader        = models\weapons     ; optional; default keeps each sub-mesh's own shader
+applies_to    = wpn_ak74, mw_part_kobra   ; optional; bases and parts it may be put on, for the bench and validation
+inv_item      = pj_ak74_tiger_kit  ; optional; an item consumed when applying it (content's choice)
+```
+
+Each replacement texture needs its own `.thm` and `_bump` / `_bump#` files, like any model texture. Otherwise the default bump map is used with the new albedo.
+
+### 13.3 Where it is stored
+
+| Object | Storage |
+|---|---|
+| Gun | Override `paintjob = <section>` in the record. It ends up in the generated section like any override, so a base section can also set a default paintjob. |
+| Fitted part | The part's `paintjob` field in the record (4.1). |
+| Loose part item | Override `paintjob` in the item's own record. The record lives on `CSE_ALifeInventoryItem`, so part items hold one too (section 1). |
+
+Fit (`FitPart`) moves the item's `paintjob` into the part's field. Remove (`RemovePart`) writes it back to the spawned item. A painted part keeps its paint on any gun.
+
+### 13.4 Which texture wins
+
+For each sub-mesh of a part, in order:
+
+1. the part's own paintjob, if it lists this sub-mesh's default texture;
+2. the gun's paintjob, if it lists it;
+3. the default texture.
+
+The gun's own sub-meshes use rule 2, then rule 3. A whole-gun paintjob therefore also paints unpainted parts whose textures it lists, and a part with its own paint keeps it.
+
+### 13.5 Applying it
+
+- One function, `CWeapon::ApplyPaintjobs()`, walks the gun's model instance and each part attachment. For each sub-mesh it picks the texture by 13.4 and calls `SetShaderTexture` only if the result differs from the current one. A sub-mesh no paintjob covers gets `ResetShaderTexture`, so removing a paintjob restores the defaults.
+- Called at the end of `ReloadConfig` (after step 9, section 6) and after the part tree is built in `net_Spawn` and on HUD attach (W6).
+- Loose part items: the same lookup (rules 1 and 3) in the item's `net_Spawn`, so a painted part on the ground or in a stash shows its paint.
+- **Shared model (W1):** one call covers both views. The visual's `hud` flag is false, so `SetShaderTexture` builds world shaders, as 7.4 requires.
+- **Fallback guns** (two instances, see 7.3): also apply to `HudItemData()->m_model` on attach, until the gun is converted.
+- Changing a paintjob is a record change like any other: update the field, then rebuild. A bench preview uses the preview record (6.3).
+
+### 13.6 Limits
+
+- A paintjob texture is painted for one model's UV layout. Reusing it on another model needs that model to share the default texture and the UVs.
+- Full texture replacement only. Layered decals, wear masks or tint colours need a shader with extra inputs, which belongs to the shader packs and is out of scope here.
+- Script `set_shader` calls on a gun or part are overwritten by the next rebuild. Mods that use it for skins should move to `set_paintjob`.
+- Icons don't show paint until the runtime 3D icon option in W10 exists. Until then a paintjob can provide an optional `icon` override for the base only.
+- The first use of a skin loads its textures and can hitch. Bench previews and traders that show many skins should preload the textures.
+
+**Done when:** a painted gun with a painted part keeps both through save/load, drop and pickup, an NPC carrying it going offline and back, and a level change. Moving the part to another gun keeps the part's paint. Removing a paintjob restores the default textures. First and third person look the same.
+
+---
+
+## 14. W13: Script API
 
 On the weapon's game object unless noted:
 
 | Function | Purpose |
 |---|---|
 | `instance_section()` | Generated section name |
-| `get_parts()` | Table of path → `{section, condition, upgrades, data}` |
-| `get_mounts([path])` | Mounts and what each accepts, for the bench |
-| `can_fit(path, section)` | `nil` / `"clash", reason` / `true`, the same contract as `mw_resolve.check` |
-| `fit_part(path, item_or_section [, state])`, `remove_part(path [, spawn])` | Commit changes |
+| `get_parts()` | Table of path → `{id, parent, mount, pos, props, section, condition, upgrades, data}` |
+| `get_mounts([path])` | Mounts and what each accepts, for the bench; for rails also `length`, `pitch`, `stops` and the occupied spans `{id, from, to}` |
+| `can_fit(path, section [, pos])` | `nil` / `"clash", reason` / `true`, the same contract as `mw_resolve.check`; `pos` defaults to `default_pos` |
+| `fit_part(path, item_or_section [, state [, pos]])`, `remove_part(path_or_id [, spawn])` | Commit changes; `fit_part` returns the new part's id |
+| `move_part(path_or_id, pos)` | Move a part along its rail; a placement-only change (8.3) |
+| `get_part_prop(path_or_id, key)`, `set_part_prop(path_or_id, key, value)` | Placement and mod state saved in the record and visible to resolve callbacks (8.3) |
+| `register_part_resolve(func)` | Add an `on_part_resolve` callback (8.3) |
 | `set_preview(record)`, `clear_preview()` | Bench preview (6.3) |
 | `get_part_data(path)`, `set_part_data(path, string)` | Per-part blob (battery, reticle mark) |
 | `get_override(key)`, `set_override(key, value)`, `iterate_overrides()` | Persistent per-gun keys, and persistent versions of `SetRPM` and the other setters |
+| `get_paintjob([path])`, `set_paintjob([path,] section_or_nil)` | Gun paintjob, or a fitted part's paintjob by path; `nil` clears it. Also available on loose part items (section 13) |
 | `part_attachment(path, hud)` | Read-only handle to a part's attachment (bone queries, lights) |
 | `combo_section()` | Compatibility name (12.2) |
 | `alife():weapon_record(se_obj)` | Read and write the record of an offline weapon |
@@ -495,7 +676,7 @@ Console commands (with `-dbg`): `mw_dump <id>` writes the generated section to a
 
 ---
 
-## 14. Where Part_bench's code goes
+## 15. Where Part_bench's code goes
 
 | Part_bench | Becomes |
 |---|---|
@@ -514,7 +695,7 @@ Console commands (with `-dbg`): `mw_dump <id>` writes the generated section to a
 
 ---
 
-## 15. Order and estimates
+## 16. Order and estimates
 
 Rough figures for one developer who knows the codebase, including testing.
 
@@ -523,9 +704,9 @@ Rough figures for one developer who knows the codebase, including testing.
 | 1 | W1 (1a–1e), spike for 1f | One model instance per gun, same pose and shaders in both views | 2–3 weeks |
 | 2 | W2, W3 | Per-gun record saved; generated sections; overrides persist | 2–3 weeks |
 | 3 | W4 | Same-object rebuild; mechanic upgrades without detaching | 2–4 weeks |
-| 4 | W5, W6 | Parts drawn by the engine from the record | 3–5 weeks |
+| 4 | W5, W6 | Parts drawn by the engine from the record; rails and placement (8.3) | 4–6 weeks |
 | 5 | W7, W8, W9 | Parts drive gameplay and aim; fit and remove from inventory and bench | 4–6 weeks |
-| 6 | W10, W11 | Icons, NPC loadouts, trade | 2–3 weeks |
+| 6 | W10, W11, W14 | Icons, NPC loadouts, trade; paintjobs on guns and parts | 3–4 weeks |
 | 7 | W12 | Combo map, old-save migration, mod shims | 3–6 weeks, plus content |
 
 Engine total: about **4–7 months**. Content conversion runs in parallel from phase 4 and is the open-ended part.
@@ -534,9 +715,10 @@ Each phase ships on its own. After phase 3, Part_bench can stop cloning. After p
 
 ---
 
-## 16. Testing
+## 17. Testing
 
 - **Resolver unit tests:** port `mw_resolve_test.script` to C++, run from a console command, plus a case for every error code.
+- **Placement short path:** after every `move_part`, a debug build also runs a full rebuild and compares transforms, aim keys and stats with the short path's result.
 - **Save round trip:** for guns with deep part trees, save, load and compare records byte for byte. Load a save made by the current exe and check that every combo gun becomes base + parts.
 - **Regression checklist:** Part_bench spikes 1, 2, 3a–c, 4, 8, 9, 11, 12 and 13, run without the scripts they replace.
 - **Performance:** a scene with 30 armed NPCs; frame time before and after, with 0, 3 and 6 parts per gun.
@@ -544,7 +726,7 @@ Each phase ships on its own. After phase 3, Part_bench can stop cloning. After p
 
 ---
 
-## 17. Risks and open questions
+## 18. Risks and open questions
 
 - **Old exes can't read new saves.** Bumping `SPAWN_VERSION` is one-way. Warn users and keep a save backup on first load.
 - **Mod breakage.** "Replace everywhere" means any script that parses combo section names breaks until shimmed. The combo map and `combo_section()` cover the common readers. The long tail is unknown until a full GAMMA run.
@@ -555,4 +737,6 @@ Each phase ships on its own. After phase 3, Part_bench can stop cloning. After p
 - **Lost SSS HUD effects** (W1, 7.4): no raindrops on the held gun until the SSS shaders take a per-draw flag, and the held gun's glass needs a visual check.
 - **Motion files and extra bones** (W1 1f) are unproven. Without them, gun mounts stay LTX offsets.
 - **Nested bone lookup** (W6) behaves differently between Part_bench's tested build (MT-TEST 2026.10.02) and the current source. Re-test before relying on part bones.
+- **Resolve callbacks that aren't reproducible** (8.3): a mod callback that reads game state can make the same record give different guns after a load. The rule is documented, but the engine can't enforce it. The debug build can run the resolver twice and log nodes that differ.
 - **Magazine mods** (Mags Redux) keep their own magazine state. A `magazine` part may need an adapter for them.
+- **Paintjobs keyed by texture name** (W14) rely on the gun and its parts using distinct default textures. If two sub-meshes share one texture but need different paint, the paintjob can't tell them apart. Add a `sub-mesh index → texture` form only if content needs it.

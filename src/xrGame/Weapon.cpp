@@ -2007,6 +2007,8 @@ bool CWeapon::SilencerAttachable()
 #define WPN_SCOPED_HIDE "wpn_scoped_hide"
 #define WPN_SCOPED_UNHIDE "wpn_scoped_unhide"
 
+// Per-frame refresh of a separate first-person copy. A shared model (1b) is the world model,
+// so UpdateAddonsVisibility already set its bones.
 void CWeapon::UpdateHUDAddonsVisibility()
 {
 	if (!m_bUseEngineAttachments)
@@ -2015,57 +2017,61 @@ void CWeapon::UpdateHUDAddonsVisibility()
 	//actor only
 	if (!GetHUDmode()) return;
 
+	if (HudSharesWorldVisual()) return;
+
+	ApplyAddonsVisibility(HudItemData()->m_model, true);
+}
+
+// One rule for the scope, silencer and launcher bones (WEAPON_ENGINE_PLAN.md 7.3, 1d), applied
+// to each model instance the weapon has. hud_copy is a separate first-person model: it keeps
+// the old first-person behaviour, asserting on a missing bone and, with modular attachments,
+// hiding wpn_scope because the scope is drawn as its own HUD item. The world model never
+// asserts on a missing bone, as before.
+void CWeapon::ApplyAddonsVisibility(IKinematics* K, bool hud_copy)
+{
 	static shared_str wpn_scope = WPN_SCOPE;
 	static shared_str wpn_silencer = WPN_SILENCER;
 	static shared_str wpn_grenade_launcher = WPN_GRENADE_LAUNCHER;
 	static shared_str wpn_scoped_hide = WPN_SCOPED_HIDE;
 	static shared_str wpn_scoped_unhide = WPN_SCOPED_UNHIDE;
 
-	//.	return;
+	auto set = [&](const shared_str& bone, bool visible, bool silent)
+	{
+		if (hud_copy)
+		{
+			HudItemData()->set_bone_visible(bone, visible, silent);
+			return;
+		}
+		const u16 id = K->LL_BoneID(bone);
+		if (id != BI_NONE && !!K->LL_GetBoneVisible(id) != visible)
+			K->LL_SetBoneVisible(id, visible, TRUE);
+	};
 
-	if (m_modular_attachments) {
-		HudItemData()->set_bone_visible(wpn_scope, FALSE, TRUE);
+	// One addon bone: shown when attached, hidden when disabled, shown when permanent
+	auto addon = [&](const shared_str& bone, bool attachable, bool attached, ALife::EWeaponAddonStatus status)
+	{
+		if (attachable)
+			set(bone, attached, false);
+		if (status == ALife::eAddonDisabled)
+			set(bone, false, true);
+		else if (status == ALife::eAddonPermanent)
+			set(bone, true, true);
+	};
+
+	if (m_modular_attachments && hud_copy)
+	{
+		set(wpn_scope, false, true);
 		if (ScopeAttachable())
 		{
-			HudItemData()->set_bone_visible(wpn_scoped_hide, !IsScopeAttached(), TRUE);
-			HudItemData()->set_bone_visible(wpn_scoped_unhide, IsScopeAttached(), TRUE);
+			set(wpn_scoped_hide, !IsScopeAttached(), true);
+			set(wpn_scoped_unhide, IsScopeAttached(), true);
 		}
 	}
-	else {
-		if (ScopeAttachable())
-		{
-			HudItemData()->set_bone_visible(wpn_scope, IsScopeAttached());
-		}
+	else
+		addon(wpn_scope, ScopeAttachable(), IsScopeAttached(), m_eScopeStatus);
 
-		if (m_eScopeStatus == ALife::eAddonDisabled)
-		{
-			HudItemData()->set_bone_visible(wpn_scope, FALSE, TRUE);
-		}
-		else if (m_eScopeStatus == ALife::eAddonPermanent)
-			HudItemData()->set_bone_visible(wpn_scope, TRUE, TRUE);
-	}
-
-	if (SilencerAttachable())
-	{
-		HudItemData()->set_bone_visible(wpn_silencer, IsSilencerAttached());
-	}
-	if (m_eSilencerStatus == ALife::eAddonDisabled)
-	{
-		HudItemData()->set_bone_visible(wpn_silencer, FALSE, TRUE);
-	}
-	else if (m_eSilencerStatus == ALife::eAddonPermanent)
-		HudItemData()->set_bone_visible(wpn_silencer, TRUE, TRUE);
-
-	if (GrenadeLauncherAttachable())
-	{
-		HudItemData()->set_bone_visible(wpn_grenade_launcher, IsGrenadeLauncherAttached());
-	}
-	if (m_eGrenadeLauncherStatus == ALife::eAddonDisabled)
-	{
-		HudItemData()->set_bone_visible(wpn_grenade_launcher, FALSE, TRUE);
-	}
-	else if (m_eGrenadeLauncherStatus == ALife::eAddonPermanent)
-		HudItemData()->set_bone_visible(wpn_grenade_launcher, TRUE, TRUE);
+	addon(wpn_silencer, SilencerAttachable(), IsSilencerAttached(), m_eSilencerStatus);
+	addon(wpn_grenade_launcher, GrenadeLauncherAttachable(), IsGrenadeLauncherAttached(), m_eGrenadeLauncherStatus);
 }
 
 void CWeapon::UpdateAddonsVisibility()
@@ -2073,81 +2079,16 @@ void CWeapon::UpdateAddonsVisibility()
 	if (!m_bUseEngineAttachments)
 		return;
 
-	static shared_str wpn_scope = WPN_SCOPE;
-	static shared_str wpn_silencer = WPN_SILENCER;
-	static shared_str wpn_grenade_launcher = WPN_GRENADE_LAUNCHER;
-
 	IKinematics* pWeaponVisual = smart_cast<IKinematics*>(Visual());
 	R_ASSERT(pWeaponVisual);
 
-	u16 bone_id;
+	if (GrenadeLauncherAttachable() && !IsGrenadeLauncherAttached())
+		isGrenadeLauncherActive = false;
+
 	UpdateHUDAddonsVisibility();
 
 	pWeaponVisual->CalculateBones_Invalidate();
-
-	bone_id = pWeaponVisual->LL_BoneID(wpn_scope);
-    if (ScopeAttachable())
-	{
-		if (IsScopeAttached())
-		{
-			if (!pWeaponVisual->LL_GetBoneVisible(bone_id))
-				pWeaponVisual->LL_SetBoneVisible(bone_id, TRUE, TRUE);
-		}
-		else
-		{
-			if (pWeaponVisual->LL_GetBoneVisible(bone_id))
-				pWeaponVisual->LL_SetBoneVisible(bone_id, FALSE, TRUE);
-		}
-	}
-	if (m_eScopeStatus == ALife::eAddonDisabled && bone_id != BI_NONE &&
-		pWeaponVisual->LL_GetBoneVisible(bone_id))
-	{
-		pWeaponVisual->LL_SetBoneVisible(bone_id, FALSE, TRUE);
-		//		Log("scope", pWeaponVisual->LL_GetBoneVisible		(bone_id));
-	}
-	bone_id = pWeaponVisual->LL_BoneID(wpn_silencer);
-	if (SilencerAttachable())
-	{
-		if (IsSilencerAttached())
-		{
-			if (!pWeaponVisual->LL_GetBoneVisible(bone_id))
-				pWeaponVisual->LL_SetBoneVisible(bone_id, TRUE, TRUE);
-		}
-		else
-		{
-			if (pWeaponVisual->LL_GetBoneVisible(bone_id))
-				pWeaponVisual->LL_SetBoneVisible(bone_id, FALSE, TRUE);
-		}
-	}
-	if (m_eSilencerStatus == ALife::eAddonDisabled && bone_id != BI_NONE &&
-		pWeaponVisual->LL_GetBoneVisible(bone_id))
-	{
-		pWeaponVisual->LL_SetBoneVisible(bone_id, FALSE, TRUE);
-		//		Log("silencer", pWeaponVisual->LL_GetBoneVisible	(bone_id));
-	}
-
-	bone_id = pWeaponVisual->LL_BoneID(wpn_grenade_launcher);
-	if (GrenadeLauncherAttachable())
-	{
-		if (IsGrenadeLauncherAttached())
-		{
-			if (!pWeaponVisual->LL_GetBoneVisible(bone_id))
-				pWeaponVisual->LL_SetBoneVisible(bone_id, TRUE, TRUE);
-		}
-		else
-		{
-			isGrenadeLauncherActive = false;
-			if (pWeaponVisual->LL_GetBoneVisible(bone_id))
-				pWeaponVisual->LL_SetBoneVisible(bone_id, FALSE, TRUE);
-		}
-	}
-	if (m_eGrenadeLauncherStatus == ALife::eAddonDisabled && bone_id != BI_NONE &&
-		pWeaponVisual->LL_GetBoneVisible(bone_id))
-	{
-		pWeaponVisual->LL_SetBoneVisible(bone_id, FALSE, TRUE);
-		//		Log("gl", pWeaponVisual->LL_GetBoneVisible			(bone_id));
-	}
-
+	ApplyAddonsVisibility(pWeaponVisual, false);
 	pWeaponVisual->CalculateBones_Invalidate();
 	pWeaponVisual->CalculateBones(TRUE);
 }

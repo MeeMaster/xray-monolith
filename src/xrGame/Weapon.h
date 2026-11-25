@@ -317,6 +317,8 @@ public:
 	//îáíîâëåíèå âèäèìîñòè äëÿ êîñòî÷åê àääîíîâ
 	void UpdateAddonsVisibility();
 	void UpdateHUDAddonsVisibility();
+	// One rule for the addon bones, applied to each model instance (WEAPON_ENGINE_PLAN.md 7.3, 1d)
+	void ApplyAddonsVisibility(IKinematics* K, bool hud_copy);
 	//èíèöèàëèçàöèÿ ñâîéñòâ ïðèñîåäèíåííûõ àääîíîâ
 	virtual void InitAddons();
 

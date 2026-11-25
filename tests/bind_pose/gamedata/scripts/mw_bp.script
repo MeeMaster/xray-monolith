@@ -3,12 +3,21 @@
 --
 --   run_string mw_bp.give()       spawn the test gun in your inventory
 --   run_string mw_bp.npc_give()   give it to the NPC under the crosshair and ask them to hold it
+--   run_string mw_bp.watch()      log the bolt and magazine offsets of the gun in your hands every
+--                                 0.1 s for 8 s: start it, then reload (first or third person)
 --   run_string mw_bp.check()      measure the bolt and magazine on the gun under the crosshair,
 --                                 the gun an NPC under the crosshair holds, or the gun in your hands
 --
 -- Console: rs_skeleton_bind_fallback 1 (fix on, default) / 0 (old behaviour).
 -- With the fix on, check() should report both bones at their rest offsets.
 -- With it off, the world model's bolt and magazine collapse onto wpn_body.
+--
+-- Change 1b (WEAPON_ENGINE_PLAN.md 7.3): hud_shared_model 1 (default) draws the first-person
+-- gun from the world model instance instead of a second copy. It applies to guns spawned
+-- after the change, so give() a new gun after toggling it. With 1:
+--   - in third person (F1) the actor's gun plays the same bolt and magazine motions as in first person
+--   - reload, then holster or drop the gun: it goes back to the bind pose (check() reports IN PLACE)
+--   - pick it up again and fire: first person animates normally
 
 local SECTION = "mw_bp_ak74"
 
@@ -100,9 +109,10 @@ function check()
 		return
 	end
 
-	local ok_fb, fallback = pcall(function()
-		return get_console():get_integer("rs_skeleton_bind_fallback")
-	end)
+	local function cvar(name)
+		local ok, v = pcall(function() return get_console():get_integer(name) end)
+		return ok and tostring(v) or "?"
+	end
 
 	local lines, in_place = {}, true
 	for _, r in ipairs(REST) do
@@ -117,8 +127,40 @@ function check()
 		end
 	end
 
-	say(string.format("%s, %s: %s. %s. rs_skeleton_bind_fallback = %s",
+	say(string.format("%s, %s: %s. %s. rs_skeleton_bind_fallback = %s, hud_shared_model = %s",
 		where, gun:section(), table.concat(lines, ", "),
 		in_place and "IN PLACE" or "NOT at rest offsets (collapsed or animated)",
-		ok_fb and tostring(fallback) or "?"))
+		cvar("rs_skeleton_bind_fallback"), cvar("hud_shared_model")))
+end
+
+-- Logs the held gun's bone offsets over time: numbers that change mean the world model is
+-- animated; numbers that stay at the rest offsets mean it is static
+function watch()
+	local held = db.actor and db.actor:active_item()
+	if not (held and IsWeapon(held)) then
+		say("hold a gun first")
+		return
+	end
+	local id, n = held:id(), 0
+	say("watching " .. held:section() .. " for 8 s; reload now")
+	CreateTimeEvent("mw_bp", "watch", 0.1, function()
+		n = n + 1
+		local gun = level.object_by_id(id)
+		if not gun then return true end
+		local ok, body = pcall(gun.bone_position, gun, "wpn_body")
+		if ok and body then
+			local parts = {}
+			for _, r in ipairs(REST) do
+				local okp, pos = pcall(gun.bone_position, gun, r.bone)
+				table.insert(parts, string.format("%s %.3f", r.name, (okp and pos) and pos:distance_to(body) or -1))
+			end
+			printf("[mw_bp] watch %02d: %s", n, table.concat(parts, ", "))
+		end
+		if n >= 80 then
+			say("watch done; see the log")
+			return true
+		end
+		ResetTimeEvent("mw_bp", "watch", 0.1)
+		return false
+	end)
 end

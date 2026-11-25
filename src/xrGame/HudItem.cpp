@@ -646,6 +646,8 @@ void CHudItem::OnH_A_Independent()
 void CHudItem::on_b_hud_detach()
 {
 	m_sounds.StopAllSounds();
+	if (m_attachable)
+		m_attachable->release_shared_model();
 }
 
 void CHudItem::on_outfit_changed()
@@ -1252,9 +1254,51 @@ void CHudItem::remove_visual_callback(hud_visual_callback* callback)
 	if (m_visual_callback.empty()) SetKinematicsCallback(false);
 }
 
+bool CHudItem::HudSharesWorldVisual() const
+{
+	return m_attachable && m_attachable->m_model_shared;
+}
+
+// Serves both callback lists when the HUD view draws the world model (WEAPON_ENGINE_PLAN.md 7.3).
+// A kinematics has one callback slot, so the world list (CGameObject) and the HUD list (CHudItem)
+// can't each install their own.
+static void VisualCallbackShared(IKinematics* tpKinematics)
+{
+	CHudItem* hud = static_cast<CHudItem*>(tpKinematics->GetUpdateCallbackParam());
+	VERIFY(hud);
+
+	if (hud->has_object())
+	{
+		CGameObject& obj = hud->object();
+		for (auto I = obj.visual_callbacks().begin(); I != obj.visual_callbacks().end(); ++I)
+			(*I)(tpKinematics);
+	}
+	for (auto I = hud->visual_callbacks().begin(); I != hud->visual_callbacks().end(); ++I)
+		(*I)(tpKinematics);
+}
+
+// set: the caller's list is about to become non-empty. Otherwise it has just become empty,
+// and the slot stays taken while the other list still has callbacks.
+void CHudItem::RefreshSharedVisualCallback(bool set)
+{
+	if (!has_object()) return;
+	IKinematics* K = smart_cast<IKinematics*>(object().Visual());
+	if (!K) return;
+
+	if (set || !object().visual_callbacks().empty() || !m_visual_callback.empty())
+		K->Callback(VisualCallbackShared, this);
+	else
+		K->Callback(0, 0);
+}
+
 void CHudItem::SetKinematicsCallback(bool set)
 {
 	if (!HudItemData()->m_model) return;
+	if (HudSharesWorldVisual())
+	{
+		RefreshSharedVisualCallback(set);
+		return;
+	}
 	if (set)
 		HudItemData()->m_model->Callback(VisualCallbackHud, this);
 	else

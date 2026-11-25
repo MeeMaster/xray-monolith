@@ -303,6 +303,10 @@ struct attachable_hud_item
 	CHudItem* m_parent_hud_item;
 	shared_str m_sect_name;
 	IKinematics* m_model;
+	// m_model is the owner's world visual, not ours: never delete it (WEAPON_ENGINE_PLAN.md 7.3)
+	bool m_model_shared = false;
+	// The model's file name, for messages (item_visual, or the world visual when shared)
+	shared_str m_visual_name;
 	u16 m_attach_place_idx;
 	hud_item_measures m_measures;
 
@@ -323,6 +327,8 @@ struct attachable_hud_item
 	}
 	~attachable_hud_item();
 	void load(const shared_str& sect_name);
+	// Shared model leaving the hands: hand the pose back to the world view
+	void release_shared_model();
 	void update(bool bForce);
 	void update_attachments_xform();
 	void setup_firedeps(firedeps& fd);

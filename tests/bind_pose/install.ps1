@@ -69,25 +69,31 @@ if (-not (Test-Path $model)) { throw "Test model not found: $model" }
 Copy-One (Resolve-Path $model).Path 'meshes\mw\wpn_ak74_n_one.ogf'
 
 # 4. Assets the model references, from whichever GAMMA mod has them
-$assets = @(
-	'textures\wpn\wpn_eft_ak74_body_diff.dds',
-	'textures\wpn\wpn_eft_ak74_body_diff.thm',
-	'textures\wpn\wpn_eft_ak74_body_bump.dds',
-	'textures\wpn\wpn_eft_ak74_body_bump#.dds',
-	'textures\wpn\wpn_eft_ak74_body_bump.thm',
-	'meshes\dynamics\weapons\wpn_ak74m_n\wpn_ak74m_hud_animation.omf'
-)
+# Every texture set the model's parts use (the "Can't find texture" list in the log)
+$parts = @('body', 'bolt', 'mag_30rnd', 'handguard', 'reciever', 'kolodka', 'muzzle', 'sight_rear',
+	'mount_dovetail', 'pistolgrip_bakelite', 'gl_gp34', 'silencer_atg', 'ammo_545x39')
+$assets = @('meshes\dynamics\weapons\wpn_ak74m_n\wpn_ak74m_hud_animation.omf')
+$optional = @()
+foreach ($p in $parts) {
+	$t = "textures\wpn\wpn_eft_ak74_$p"
+	$assets += "${t}_diff.dds", "${t}_bump.dds", "${t}_bump#.dds"
+	$optional += "${t}_diff.thm", "${t}_bump.thm"   # some parts ship without a bump .thm
+}
 $mods = Get-ChildItem -LiteralPath $GammaMods -Directory | Sort-Object Name
-foreach ($rel in $assets) {
-	$found = $null
-	$foundMod = $null
+function Find-InMods([string]$rel) {
 	foreach ($mod in $mods) {
 		$candidate = Join-Path $mod.FullName (Join-Path 'gamedata' $rel)
-		if (Test-Path -LiteralPath $candidate) { $found = $candidate; $foundMod = $mod.Name; break }
+		if (Test-Path -LiteralPath $candidate) { return @($candidate, $mod.Name) }
 	}
-	if (-not $found) { throw "Not found in any mod under ${GammaMods}: $rel" }
-	Write-Host "  $rel <- $foundMod"
-	Copy-One $found $rel
+}
+foreach ($rel in $assets + $optional) {
+	$hit = Find-InMods $rel
+	if (-not $hit) {
+		if ($optional -contains $rel) { Write-Host "  $rel (none, skipped)"; continue }
+		throw "Not found in any mod under ${GammaMods}: $rel"
+	}
+	Write-Host "  $rel <- $($hit[1])"
+	Copy-One $hit[0] $rel
 }
 
 # 5. Optional: the engine build

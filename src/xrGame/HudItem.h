@@ -207,6 +207,10 @@ public:
 	IC BOOL RenderHud() { return m_huditem_flags.test(fl_renderhud); }
 	attachable_hud_item* HudItemData();
 	bool IsAttachedToHUD();
+	// The HUD view draws the object's own world model instead of a second copy (WEAPON_ENGINE_PLAN.md 7.3)
+	bool HudSharesWorldVisual() const;
+	// One kinematics callback slot serves the world and HUD callback lists on a shared model
+	void RefreshSharedVisualCallback(bool set);
 	virtual bool ParentIsActor();
 	virtual float GetNearWallRange();
 	virtual float GetBaseHudFov();

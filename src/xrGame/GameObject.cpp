@@ -1042,6 +1042,13 @@ void CGameObject::remove_visual_callback(visual_callback* callback)
 void CGameObject::SetKinematicsCallback(bool set)
 {
 	if (!Visual()) return;
+	// The HUD view shares this visual: one slot serves both callback lists (HudItem.cpp)
+	CHudItem* hud = smart_cast<CHudItem*>(this);
+	if (hud && hud->HudSharesWorldVisual())
+	{
+		hud->RefreshSharedVisualCallback(set);
+		return;
+	}
 	if (set)
 		smart_cast<IKinematics*>(Visual())->Callback(VisualCallback, this);
 	else

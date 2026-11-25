@@ -16,6 +16,47 @@
 extern int g_nearwall;
 
 int ps_hud_ik_compensation = 0;
+// 1: a weapon whose world model is animated and matches its item_visual (or has none) is drawn
+// in first person from that same model instance (WEAPON_ENGINE_PLAN.md 7.3). 0: always load
+// item_visual as a second model. Applies to HUD data created after the change.
+int ps_hud_shared_model = 1;
+
+void set_skip_marker(IRenderVisual* vis, bool skip); // script_attachment_manager.cpp
+
+static shared_str normalized_visual_name(LPCSTR name)
+{
+	string_path s;
+	xr_strcpy(s, name ? name : "");
+	xr_strlwr(s);
+	for (char* c = s; *c; ++c)
+		if (*c == '/') *c = '\\';
+	const size_t n = xr_strlen(s);
+	if (n > 4 && 0 == xr_strcmp(s + n - 4, ".ogf"))
+		s[n - 4] = 0;
+	return shared_str(s);
+}
+
+// The owner's world model, if the HUD view can draw it instead of loading item_visual
+static IKinematicsAnimated* shareable_world_visual(CHudItem* item, const shared_str& sect)
+{
+	CWeapon* wpn = smart_cast<CWeapon*>(item);
+	if (!ps_hud_shared_model || !wpn || !item->has_object())
+		return nullptr;
+	if (wpn->m_modular_attachments)
+		return nullptr; // draws its scope as a second HUD item and hides wpn_scope only in first person
+
+	CPhysicItem& obj = item->object();
+	IRenderVisual* v = obj.Visual();
+	IKinematicsAnimated* ka = v ? v->dcast_PKinematicsAnimated() : nullptr;
+	if (!ka || !ka->ID_Cycle_Safe("idle").valid())
+		return nullptr; // vanilla world models are rigid, or carry no first-person motions
+
+	if (pSettings->line_exist(sect, "item_visual") &&
+		normalized_visual_name(pSettings->r_string(sect, "item_visual")) != normalized_visual_name(obj.cNameVisual().c_str()))
+		return nullptr; // a different first-person model: keep the two-model setup
+
+	return ka;
+}
 
 player_hud* g_player_hud = NULL;
 Fvector _ancor_pos;
@@ -230,7 +271,7 @@ void attachable_hud_item::set_bone_visible(const shared_str& bone_name, BOOL bVi
 	{
 		if (bSilent) return;
 		R_ASSERT2(
-			0, make_string("model [%s] has no bone [%s]", pSettings->r_string(m_sect_name, "item_visual"), bone_name.
+			0, make_string("model [%s] has no bone [%s]", m_visual_name.c_str(), bone_name.
 				c_str()).c_str());
 	}
 	bVisibleNow = m_model->LL_GetBoneVisible(bone_id);
@@ -359,6 +400,10 @@ void attachable_hud_item::render()
 	if (m_parent_hud_item->m_instance_holder_hud && !m_parent_hud_item->m_instance_holder_hud->ModelInstanceMultirender()) return;
 
 	::Render->set_Transform(&m_item_transform);
+	// A shared model is also drawn by the world view in the same frame (the actor's shadow).
+	// Without the skip marker the renderer would drop the second add in a pass.
+	if (m_model_shared)
+		set_skip_marker(m_model->dcast_RenderVisual(), true);
 	::Render->add_Visual(m_model->dcast_RenderVisual());
 
 	if (!m_parent_hud_item->has_object()) return;
@@ -611,21 +656,70 @@ attachable_hud_item::~attachable_hud_item()
 {
 	if (m_parent_hud_item->m_instance_holder_hud) m_parent_hud_item->m_instance_holder_hud->ClearModelInstance();
 
+	if (m_model_shared)
+	{
+		release_shared_model(); // the owner deletes the model
+		m_model = nullptr;
+		return;
+	}
+
 	IRenderVisual* v = m_model->dcast_RenderVisual();
 	::Render->model_Delete(v);
 	m_model = nullptr;
+}
+
+void attachable_hud_item::release_shared_model()
+{
+	if (!m_model_shared || !m_model)
+		return;
+
+	// The owner deletes its visual in net_Destroy, before the item itself is destroyed.
+	// Only touch the model while it is still the owner's live visual.
+	IRenderVisual* v = m_parent_hud_item->has_object() ? m_parent_hud_item->object().Visual() : nullptr;
+	if (!v || v->dcast_PKinematics() != m_model)
+		return;
+
+	// anim_play pins the root bone; leave it to the bind pose, unless physics owns it now
+	CBoneInstance& root = m_model->LL_GetBoneInstance(m_model->LL_GetBoneRoot());
+	if (!root.callback())
+		root.set_callback_overwrite(FALSE);
+
+	// Stop the first-person motions: on the back, on the ground or in an NPC's hands the
+	// world view shows the bind pose (SkeletonAnimated.cpp, rs_skeleton_bind_fallback)
+	if (IKinematicsAnimated* ka = m_model->dcast_PKinematicsAnimated())
+	{
+		const u16 pc = ka->partitions().count();
+		for (u16 pid = 0; pid < pc; ++pid)
+			ka->LL_CloseCycle(pid, u8(-1));
+	}
+	m_model->CalculateBones_Invalidate();
 }
 
 void attachable_hud_item::load(const shared_str& sect_name)
 {
 	m_sect_name = sect_name;
 
-	// Visual
-	LPCSTR visual_name = pSettings->r_string(sect_name, "item_visual");
-	::Render->hud_loading = true;
-	IKinematicsAnimated* visual = ::Render->model_Create(visual_name)->dcast_PKinematicsAnimated();
-	::Render->hud_loading = false;
-	R_ASSERT2(visual, make_string("could not create model %s, section %s", visual_name, sect_name.c_str()));
+	// Visual: the owner's world model when it can serve both views, else a second model
+	IKinematicsAnimated* visual = shareable_world_visual(m_parent_hud_item, sect_name);
+	if (visual)
+	{
+		m_model_shared = true;
+		m_visual_name = m_parent_hud_item->object().cNameVisual();
+	}
+	else
+	{
+		LPCSTR visual_name = pSettings->r_string(sect_name, "item_visual");
+		// A separate first-person file keeps the HUD shaders (SSS raindrops). A file that is
+		// also the owner's world model loads plain: the model pool keys on the file name only,
+		// so a HUD-flagged load would give the world copies HUD shaders too (WEAPON_MODELS.md 6)
+		const bool world_file = m_parent_hud_item->has_object() &&
+			normalized_visual_name(visual_name) == normalized_visual_name(m_parent_hud_item->object().cNameVisual().c_str());
+		::Render->hud_loading = !world_file;
+		visual = ::Render->model_Create(visual_name)->dcast_PKinematicsAnimated();
+		::Render->hud_loading = false;
+		R_ASSERT2(visual, make_string("could not create model %s, section %s", visual_name, sect_name.c_str()));
+		m_visual_name = visual_name;
+	}
 	m_model = smart_cast<IKinematics*>(visual);
 
 	m_attach_place_idx = pSettings->r_u16(sect_name, "attach_place_idx");
@@ -653,8 +747,7 @@ player_hud_motion* attachable_hud_item::find_motion(const shared_str& anm_name)
 	R_ASSERT2(anm, make_string("model [%s] has no motion alias defined [%s]", m_sect_name.c_str(), anm_name).c_str())
 		;
 	VERIFY2(anm->m_animations.size(),
-		make_string("model [%s] has no motion defined in motion_alias [%s]", pSettings->r_string(m_sect_name,
-			"item_visual"), anim_name_r).c_str());
+		make_string("model [%s] has no motion defined in motion_alias [%s]", m_visual_name.c_str(), anim_name_r).c_str());
 
 	return anm;
 }
@@ -689,7 +782,7 @@ u32 attachable_hud_item::anim_play(const shared_str& anm_name_b, BOOL bMixIn, co
 		else if (bDebug)
 			Msg("playing item animation [%s]", item_anm_name.c_str());
 
-		R_ASSERT3(M2.valid(), make_string("model has no motion [idle], section %s", m_sect_name.c_str()).c_str(), pSettings->r_string(m_sect_name, "item_visual"));
+		R_ASSERT3(M2.valid(), make_string("model has no motion [idle], section %s", m_sect_name.c_str()).c_str(), m_visual_name.c_str());
 
 		u16 root_id = m_model->LL_GetBoneRoot();
 		CBoneInstance& root_binst = m_model->LL_GetBoneInstance(root_id);
