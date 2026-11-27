@@ -297,6 +297,7 @@ void CPhysicsShellHolder::activate_physic_shell()
 			pair.second->OnParentCreatePhysicsShell();
 		}
 	}
+	on_shell_attachments(true);
 }
 
 void CPhysicsShellHolder::setup_physic_shell()
@@ -318,6 +319,7 @@ void CPhysicsShellHolder::setup_physic_shell()
 			pair.second->OnParentCreatePhysicsShell();
 		}
 	}
+	on_shell_attachments(true);
 }
 
 void CPhysicsShellHolder::deactivate_physics_shell()
@@ -329,6 +331,8 @@ void CPhysicsShellHolder::deactivate_physics_shell()
 			pair.second->OnParentDestroyPhysicsShell();
 		}
 	}
+	if (m_pPhysicsShell)
+		on_shell_attachments(false);
 	
 	destroy_physics_shell(m_pPhysicsShell);
 }

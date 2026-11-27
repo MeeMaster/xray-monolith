@@ -42,6 +42,14 @@ namespace instance_record_script
 	bool go_set_part_prop(CScriptGameObject* self, u16 id, LPCSTR key, const ::luabind::object& value);
 	// 4b: the weapon's drawn part tree: {{id, parent, section, model, bone, drawn, reason}, ...}
 	::luabind::object go_get_part_tree(lua_State* L, CScriptGameObject* self);
+	// 4c script hooks (WEAPON_ENGINE_PLAN.md 8.2)
+	bool go_set_part_bone_visible(CScriptGameObject* self, u16 id, LPCSTR bone, bool visible);
+	bool go_set_part_bone_visible_view(CScriptGameObject* self, u16 id, LPCSTR bone, bool visible, LPCSTR view);
+	bool go_attach_part_light(CScriptGameObject* self, u16 id, const ::luabind::object& light);
+	bool go_attach_part_light_bone(CScriptGameObject* self, u16 id, const ::luabind::object& light, LPCSTR bone);
+	bool go_detach_part_light(CScriptGameObject* self, u16 id);
+	::luabind::object go_get_part_transform(lua_State* L, CScriptGameObject* self, u16 id, LPCSTR bone, bool hud);
+	::luabind::object go_get_part_transform_origin(lua_State* L, CScriptGameObject* self, u16 id, bool hud);
 
 	// Methods of cse_alife_inventory_item. While the item has a game object, edits are
 	// forwarded to it; otherwise they change the server copy, which the next spawn reads.

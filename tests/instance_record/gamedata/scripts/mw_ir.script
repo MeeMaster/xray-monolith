@@ -36,6 +36,8 @@
 -- prepare() also places the marked gun's scope (PLACEMENT), and verify() checks the placement.
 --
 -- Engine-drawn parts (4b, WEAPON_ENGINE_PLAN.md 8.2):
+--   run_string mw_ir.hooks()          after parts(): script hooks on the test parts (bone visibility by view,
+--                                     part transforms, a light on part A). hooks_clear() detaches the light.
 --   run_string mw_ir.parts()          on the gun in your hands: fits two visible test parts (copies of the gun's
 --                                     own model, one turned 90 degrees on top, one nested on it), plus parts that
 --                                     must not draw, and checks the part tree. The two stay for you to look at.
@@ -844,6 +846,19 @@ local function test_parts(w)
 	return out
 end
 
+-- An offset prop that puts a part at pos (metres) turned by hpb (degrees), both in the parent MODEL's frame,
+-- when the part hangs from bone b of that model (a model_bones() entry). Offsets are in the bone's own frame,
+-- which on most guns is turned against the model (the root bone often by 90 degrees), so convert:
+-- offset = inverse(bone bind) * wanted.
+local function offset_in_bone(b, pos, hpb)
+	local O = mw_ir_ogf
+	local rb = O.hpb_matrix(b.hpb.x, b.hpb.y, b.hpb.z)
+	local rt = { { rb[1][1], rb[2][1], rb[3][1] }, { rb[1][2], rb[2][2], rb[3][2] }, { rb[1][3], rb[2][3], rb[3][3] } }
+	local p = O.apply(rt, { pos[1] - b.pos.x, pos[2] - b.pos.y, pos[3] - b.pos.z })
+	local r = O.matrix_hpb(O.mat_mul(rt, O.hpb_matrix(hpb[1], hpb[2], hpb[3])))
+	return string.format("%g, %g, %g, %g, %g, %g", p[1], p[2], p[3], r[1], r[2], r[3])
+end
+
 function parts_clear()
 	local w = gun()
 	if not w then return end
@@ -864,9 +879,9 @@ function parts()
 
 	local sect = w:section()
 	local vis = ini_sys:r_string_ex(sect, "visual")
-	local root
+	local root, root_bone
 	for name, b in pairs(model_bones(sect) or {}) do
-		if b.parent == "" then root = name end
+		if b.parent == "" then root, root_bone = name, b end
 	end
 	if not check(vis and root, "the gun has a visual and a root bone: " .. tostring(vis) .. ", " .. tostring(root)) then
 		return finish("parts")
@@ -877,9 +892,11 @@ function parts()
 		for k, v in pairs(props) do w:set_part_prop(id, k, v) end
 		return id
 	end
-	-- Two drawn parts: A on the gun's root bone, 12 cm up and turned 90 degrees; B nested on A's root bone, 12 cm above A
-	local a = add(0, PT .. "a", { visual = vis, bone = root, offset = "0, 0.12, 0, 90, 0, 0" })
-	local b = add(a, PT .. "b", { visual = vis, bone = root, offset = "0, 0.12, 0" })
+	-- Two drawn parts: A on the gun's root bone, 12 cm above the gun and turned 90 degrees about the gun's up axis;
+	-- B nested on A's root bone, 12 cm above A (24 cm after the move below) and lined up with A
+	-- (offsets converted from the model's frame into the root bone's, see offset_in_bone)
+	local a = add(0, PT .. "a", { visual = vis, bone = root, offset = offset_in_bone(root_bone, { 0, 0.12, 0 }, { 90, 0, 0 }) })
+	local b = add(a, PT .. "b", { visual = vis, bone = root, offset = offset_in_bone(root_bone, { 0, 0.12, 0 }, { 0, 0, 0 }) })
 	-- Parts that must not draw, each for its own reason
 	local c = add(0, PT .. "c", { visual = vis })
 	local d = add(0, PT .. "d", { visual = vis, bone = "mw_no_such_bone" })
@@ -915,10 +932,38 @@ function parts()
 	w:record_remove_part(g)
 
 	-- Moving a part rebuilds it in place
-	check(w:set_part_prop(b, "offset", "0, 0.24, 0") and tree_by_id(w)[b].drawn, "moving part B keeps it drawn")
+	check(w:set_part_prop(b, "offset", offset_in_bone(root_bone, { 0, 0.24, 0 }, { 0, 0, 0 })) and tree_by_id(w)[b].drawn,
+		"moving part B keeps it drawn")
+
+	-- hides (4c): a visible leaf bone of the gun, not one of the addon bones
+	local bones = model_bones(sect) or {}
+	local is_parent = {}
+	for _, bn in pairs(bones) do is_parent[bn.parent] = true end
+	local addon = { wpn_scope = true, wpn_silencer = true, wpn_launcher = true, wpn_scoped_hide = true, wpn_scoped_unhide = true }
+	local leaf
+	for name in pairs(bones) do
+		if not is_parent[name] and not addon[name] and name ~= root and w:bone_visible(name) then leaf = name break end
+	end
+	if check(leaf, "the gun has a visible leaf bone to hide: " .. tostring(leaf)) then
+		w:set_part_prop(a, "hides", leaf)
+		t = tree_by_id(w) -- rebuilds the tree, which updates the bones
+		check(t[a].hides == leaf and not w:bone_visible(leaf), "part A hides " .. leaf .. ": tree says '" .. tostring(t[a].hides) .. "'")
+		w:set_part_prop(b, "hides", leaf)
+		w:set_part_prop(a, "hides", nil)
+		tree_by_id(w)
+		check(not w:bone_visible(leaf), "with part B hiding it too, " .. leaf .. " stays hidden after A stops")
+		w:set_part_prop(b, "hides", nil)
+		tree_by_id(w)
+		check(w:bone_visible(leaf), leaf .. " is shown again once no part hides it")
+		w:set_part_prop(a, "hides", leaf)
+		tree_by_id(w)
+		check(not w:bone_visible(leaf), "part A hides " .. leaf .. " again, and keeps hiding it (look for the gap)")
+	end
+
 	finish("parts")
-	say("two test copies of the gun now sit on top of it. Check first person, third person, aiming, dropping it, "
-		.. "an NPC holding it, and save/load (then run parts_check()). parts_clear() removes them.")
+	say("two test copies of the gun now sit on top of it" .. (leaf and (", and the gun's " .. leaf .. " bone is hidden") or "")
+		.. ". Check first person, third person, aiming, an NPC holding it, and save/load (then run parts_check()). "
+		.. "Drop it: the dropped gun should rest on the copies, not let them sink into the ground. parts_clear() removes them.")
 end
 
 function parts_check()
@@ -934,5 +979,165 @@ function parts_check()
 		if n and n.drawn then drawn = drawn + 1 end
 	end
 	check(#test_parts(w) == 2 and drawn == 2 and total == 2, string.format("the gun has its 2 test parts drawn (%d of %d)", drawn, total))
+	for _, n in ipairs(w:get_part_tree()) do
+		if n.hides ~= "" then
+			check(not w:bone_visible(n.hides), "part " .. n.id .. " still hides " .. n.hides)
+		end
+	end
 	finish("parts_check")
+end
+
+-- parts_diag(): prints what the part placement works from on the gun in your hands: the root bone's bind
+-- pose and its current pose in the world and first-person models, and each test part's offset and hides.
+function parts_diag()
+	local w = gun()
+	if not w then return end
+	local sect = w:section()
+	local function v(x) return x and string.format("%.3f, %.3f, %.3f", x.x, x.y, x.z) or "-" end
+	local function pose(p) return p and ("pos " .. v(p.pos) .. "  hpb " .. v(p.hpb)) or "missing" end
+	say("gun " .. sect .. ", visual " .. tostring(ini_sys:r_string_ex(sect, "visual"))
+		.. ", hud " .. tostring(ini_sys:r_string_ex(sect, "hud")))
+	local bones = model_bones(sect) or {}
+	local root
+	for name, b in pairs(bones) do
+		if b.parent == "" then
+			root = name
+			say("root bone " .. name .. ": bind " .. pose(b))
+		end
+	end
+	if root then
+		say("  world now: " .. pose(weapon_bone_pose(w:id(), root, false)))
+		say("  hud now:   " .. pose(weapon_bone_pose(w:id(), root, true)))
+	end
+	for _, n in ipairs(w:get_part_tree()) do
+		say(string.format("part %d (parent %d) %s on %s, offset '%s', hides '%s'%s", n.id, n.parent, n.model, n.bone,
+			tostring(w:get_part_prop(n.id, "offset")), n.hides, n.drawn and "" or (": not drawn, " .. n.reason)))
+		if n.hides ~= "" then
+			for bone in string.gmatch(n.hides, "[^,]+") do
+				say(string.format("  %s: world model visible %s; hud model %s", bone, tostring(w:bone_visible(bone)),
+					weapon_bone_pose(w:id(), bone, true) and "has it" or "doesn't have it"))
+			end
+		end
+	end
+end
+
+---------------------------------------------------------------------------
+-- hooks(): the 4c script hooks (WEAPON_ENGINE_PLAN.md 8.2) on the test parts left by parts()
+--   set_part_bone_visible, get_part_transform, attach_part_light / detach_part_light
+---------------------------------------------------------------------------
+
+local function has_bone(list, bone)
+	return string.find("," .. (list or "") .. ",", "," .. bone .. ",", 1, true) ~= nil
+end
+
+local function dist(p, q)
+	local x, y, z = p.x - q.x, p.y - q.y, p.z - q.z
+	return math.sqrt(x * x + y * y + z * z)
+end
+
+function hooks()
+	local w = gun()
+	if not w then return end
+	begin()
+	local a, b
+	for _, p in ipairs(test_parts(w)) do
+		if p.mount == PT .. "a" then a = p.id elseif p.mount == PT .. "b" then b = p.id end
+	end
+	local t = tree_by_id(w)
+	if not check(a and b and t[a] and t[a].drawn and t[b] and t[b].drawn, "the gun has drawn test parts A and B (run parts() first)") then
+		return finish("hooks")
+	end
+
+	-- A leaf bone of the part's model to hide, and the root bones of the gun and the part
+	local sect = w:section()
+	local gun_root, gun_root_bone
+	for name, bn in pairs(model_bones(sect) or {}) do
+		if bn.parent == "" then gun_root, gun_root_bone = name, bn end
+	end
+	local pbones = model_bones(t[a].model) or {}
+	local is_parent, part_root, leaf = {}, nil, nil
+	for _, bn in pairs(pbones) do is_parent[bn.parent] = true end
+	for name, bn in pairs(pbones) do
+		if bn.parent == "" then part_root = name end
+	end
+	local addon = { wpn_scope = true, wpn_silencer = true, wpn_launcher = true }
+	for name in pairs(pbones) do
+		if not is_parent[name] and name ~= part_root and not addon[name] and not has_bone(t[a].hidden, name) then leaf = name break end
+	end
+	if not check(leaf and part_root, "part A's model has a visible leaf bone: " .. tostring(leaf)) then
+		return finish("hooks")
+	end
+	local hud = w:get_part_transform(a, true) ~= nil
+	say("the gun is in " .. (hud and "first person" or "the world view") .. "; checks below follow that")
+
+	local function hidden_now() return has_bone(tree_by_id(w)[a].hidden, leaf) end
+
+	-- Bone visibility
+	check(w:set_part_bone_visible(a, leaf, false) and hidden_now(), "hiding " .. leaf .. " on part A in both views")
+	check(w:set_part_bone_visible(a, leaf, true) and not hidden_now(), "showing it again")
+	check(w:set_part_bone_visible(a, leaf, false, "world") and hidden_now() == not hud, "hidden in the world view only: " .. (hud and "visible now" or "hidden now"))
+	w:set_part_bone_visible(a, leaf, true, "world")
+	check(w:set_part_bone_visible(a, leaf, false, "hud") and hidden_now() == hud, "hidden in first person only: " .. (hud and "hidden now" or "visible now"))
+	check(not w:set_part_bone_visible(a, leaf, false, "sideways"), "an unknown view is refused")
+	check(not w:set_part_bone_visible(9999, leaf, false), "a part that doesn't exist is refused")
+	w:set_part_bone_visible(a, leaf, true, "world") -- end: hidden in first person only
+
+	-- Hooks survive a rebuild (moving part B rebuilds the tree)
+	w:set_part_prop(b, "offset", offset_in_bone(gun_root_bone, { 0, 0.25, 0 }, { 0, 0, 0 }))
+	tree_by_id(w)
+	w:set_part_prop(b, "offset", offset_in_bone(gun_root_bone, { 0, 0.24, 0 }, { 0, 0, 0 }))
+	check(hidden_now() == hud, "the hide survives a rebuild of the tree")
+
+	-- Transforms
+	local pa, pb = w:get_part_transform(a, false), w:get_part_transform(b, false)
+	if check(pa and pb, "world transforms of A and B") then
+		check(math.abs(dist(pa.c, pb.c) - 0.24) < 0.005, string.format("B's origin is 0.24 m from A's: %.4f", dist(pa.c, pb.c)))
+		local want = dist(vector():set(0, 0.12, 0), gun_root_bone.pos)
+		local got = dist(pa.c, w:bone_position(gun_root))
+		check(math.abs(got - want) < 0.01, string.format("A's origin is %.3f m from the gun's root bone: %.4f", want, got))
+	end
+	check(w:get_part_transform(a, part_root, false) ~= nil, "a bone of the part: " .. part_root)
+	check(w:get_part_transform(a, "mw_no_such_bone", false) == nil, "a bone the part lacks gives nil")
+	check(w:get_part_transform(9999, false) == nil, "a part that doesn't exist gives nil")
+	if hud then
+		local ha = w:get_part_transform(a, true)
+		check(ha ~= nil, "first-person transform of A")
+	end
+
+	-- Light
+	local function make_light()
+		local l = attachment_script_light()
+		l.type = 2
+		l.range = 15
+		l.color = fcolor():set(1, 0.3, 0.2, 1)
+		l.texture = "internal\\internal_light_torch_r2"
+		l.shadow = false
+		l.volumetric = false
+		l.hud_mode = false
+		l:set_direction(0, 0, 1)
+		l.enabled = true
+		return l
+	end
+	check(not w:attach_part_light(9999, make_light()), "a light for a part that doesn't exist is refused")
+	check(w:attach_part_light(a, make_light(), part_root), "a light on part A")
+	check(w:detach_part_light(a) and not w:detach_part_light(a), "detaching it, and detaching again finds none")
+	check(w:attach_part_light(a, make_light(), part_root), "a red spotlight on part A again")
+	collectgarbage("collect") -- the engine holds the only reference to the light now
+	check(w:attach_part_light(a, make_light()) and w:attach_part_light(a, make_light(), part_root), "replacing the light releases the old one")
+	collectgarbage("collect")
+
+	finish("hooks")
+	say("part A now has a red spotlight along its barrel, and its " .. leaf .. " bone is hidden in first person only. "
+		.. "Check: the light follows the part in first and third person, aiming and walking; " .. leaf
+		.. " shows in third person and is gone in first; the light stays after save/load only if a script attaches it again "
+		.. "(hooks are not saved). hooks_clear() removes the light and the hide.")
+end
+
+function hooks_clear()
+	local w = gun()
+	if not w then return end
+	for _, p in ipairs(test_parts(w)) do
+		w:detach_part_light(p.id)
+	end
+	say("lights detached; run parts_clear() to drop the hides with the parts")
 end

@@ -165,11 +165,16 @@ public:
 	virtual void RenderAttachments();
 	virtual void render_hud_parts(IKinematics* model, const Fmatrix& xform);
 	virtual void on_instance_parts_changed() { m_part_tree_dirty = true; }
-	void parts_update();                   // rebuilds the part tree if the parts changed
+	void parts_update();                   // rebuilds the part tree if the parts changed, applies the view
+	CWeaponPartTree* part_tree_rw() { parts_update(); return m_part_tree; }
 	const CWeaponPartTree* part_tree() const { return m_part_tree; }
 private:
 	CWeaponPartTree* m_part_tree = nullptr;
 	bool m_part_tree_dirty = false;
+	void parts_rebuild();
+	xr_vector<shared_str> m_part_hides;   // 4c: gun bones the drawn parts hide
+	xr_vector<shared_str> m_part_unhides; // 4c: bones parts stopped hiding, shown again on the next visibility update
+	virtual void on_shell_attachments(bool create);
 public:
 	virtual void render_hud_mode();
 	virtual bool need_renderable();

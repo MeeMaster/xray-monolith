@@ -1171,20 +1171,48 @@ BOOL CWeapon::net_Spawn(CSE_Abstract* DC)
 
 void CWeapon::parts_update()
 {
-	if (!m_part_tree_dirty)
-		return;
+	if (m_part_tree_dirty)
+		parts_rebuild();
+	if (m_part_tree)
+		m_part_tree->apply_view(!!GetHUDmode()); // 4c: script bone visibility follows the gun's view
+}
+
+void CWeapon::parts_rebuild()
+{
 	m_part_tree_dirty = false;
 	IKinematics* gun = Visual() ? Visual()->dcast_PKinematics() : nullptr;
 	if (instance_record().parts.empty())
-	{
 		xr_delete(m_part_tree);
-		return;
+	else
+	{
+		if (!m_part_tree)
+			m_part_tree = xr_new<CWeaponPartTree>();
+		string128 owner;
+		xr_sprintf(owner, "%s [%u]", cNameSect().c_str(), ID());
+		m_part_tree->build(instance_record(), gun, owner, this);
 	}
-	if (!m_part_tree)
-		m_part_tree = xr_new<CWeaponPartTree>();
-	string128 owner;
-	xr_sprintf(owner, "%s [%u]", cNameSect().c_str(), ID());
-	m_part_tree->build(instance_record(), gun, owner);
+
+	// 4c: the gun bones the parts hide
+	xr_vector<shared_str> hides;
+	if (m_part_tree)
+		m_part_tree->hidden_bones(hides);
+	if (hides != m_part_hides)
+	{
+		for (const shared_str& b : m_part_hides)
+			if (std::find(hides.begin(), hides.end(), b) == hides.end()
+				&& std::find(m_part_unhides.begin(), m_part_unhides.end(), b) == m_part_unhides.end())
+				m_part_unhides.push_back(b);
+		m_part_hides.swap(hides);
+		if (Visual())
+			UpdateAddonsVisibility();
+	}
+}
+
+void CWeapon::on_shell_attachments(bool create)
+{
+	inherited::on_shell_attachments(create);
+	if (m_part_tree)
+		m_part_tree->shell(create);
 }
 
 void CWeapon::RenderAttachments()
@@ -1216,6 +1244,8 @@ void CWeapon::net_Destroy()
 
 	xr_delete(m_part_tree); // 4b: rebuilt on the next spawn
 	m_part_tree_dirty = false;
+	m_part_hides.clear();
+	m_part_unhides.clear();
 }
 
 BOOL CWeapon::IsUpdating()
@@ -2078,7 +2108,7 @@ bool CWeapon::SilencerAttachable()
 // so UpdateAddonsVisibility already set its bones.
 void CWeapon::UpdateHUDAddonsVisibility()
 {
-	if (!m_bUseEngineAttachments)
+	if (!m_bUseEngineAttachments && m_part_hides.empty() && m_part_unhides.empty())
 		return;
 
 	//actor only
@@ -2125,31 +2155,41 @@ void CWeapon::ApplyAddonsVisibility(IKinematics* K, bool hud_copy)
 			set(bone, true, true);
 	};
 
-	if (m_modular_attachments && hud_copy)
-	{
-		set(wpn_scope, false, true);
-		if (ScopeAttachable())
-		{
-			set(wpn_scoped_hide, !IsScopeAttached(), true);
-			set(wpn_scoped_unhide, IsScopeAttached(), true);
-		}
-	}
-	else
-		addon(wpn_scope, ScopeAttachable(), IsScopeAttached(), m_eScopeStatus);
+	// 4c: bones the parts no longer hide come back first, then the addon rule runs, then the parts' hides win
+	for (const shared_str& b : m_part_unhides)
+		set(b, true, true);
 
-	addon(wpn_silencer, SilencerAttachable(), IsSilencerAttached(), m_eSilencerStatus);
-	addon(wpn_grenade_launcher, GrenadeLauncherAttachable(), IsGrenadeLauncherAttached(), m_eGrenadeLauncherStatus);
+	if (m_bUseEngineAttachments)
+	{
+		if (m_modular_attachments && hud_copy)
+		{
+			set(wpn_scope, false, true);
+			if (ScopeAttachable())
+			{
+				set(wpn_scoped_hide, !IsScopeAttached(), true);
+				set(wpn_scoped_unhide, IsScopeAttached(), true);
+			}
+		}
+		else
+			addon(wpn_scope, ScopeAttachable(), IsScopeAttached(), m_eScopeStatus);
+
+		addon(wpn_silencer, SilencerAttachable(), IsSilencerAttached(), m_eSilencerStatus);
+		addon(wpn_grenade_launcher, GrenadeLauncherAttachable(), IsGrenadeLauncherAttached(), m_eGrenadeLauncherStatus);
+	}
+
+	for (const shared_str& b : m_part_hides)
+		set(b, false, true);
 }
 
 void CWeapon::UpdateAddonsVisibility()
 {
-	if (!m_bUseEngineAttachments)
+	if (!m_bUseEngineAttachments && m_part_hides.empty() && m_part_unhides.empty())
 		return;
 
 	IKinematics* pWeaponVisual = smart_cast<IKinematics*>(Visual());
 	R_ASSERT(pWeaponVisual);
 
-	if (GrenadeLauncherAttachable() && !IsGrenadeLauncherAttached())
+	if (m_bUseEngineAttachments && GrenadeLauncherAttachable() && !IsGrenadeLauncherAttached())
 		isGrenadeLauncherActive = false;
 
 	UpdateHUDAddonsVisibility();
@@ -2158,6 +2198,7 @@ void CWeapon::UpdateAddonsVisibility()
 	ApplyAddonsVisibility(pWeaponVisual, false);
 	pWeaponVisual->CalculateBones_Invalidate();
 	pWeaponVisual->CalculateBones(TRUE);
+	m_part_unhides.clear();
 }
 
 // 1g (WEAPON_ENGINE_PLAN.md 7.5): a short motion on the world model when the gun fires outside

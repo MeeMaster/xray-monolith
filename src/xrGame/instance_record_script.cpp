@@ -17,6 +17,10 @@
 #include "weapon_parts.h"
 #include "weapon_part_tree.h"
 #include "Weapon.h"
+#include "player_hud.h"
+#include "script_light_inline.h"
+#include "script_attachment_manager.h"
+#include "../Include/xrRender/Kinematics.h"
 
 namespace
 {
@@ -271,6 +275,38 @@ namespace
 			return 1;
 		}
 		bind_bone(L, *b).pushvalue();
+		return 1;
+	}
+
+	// weapon_bone_pose(id, bone, hud): the bone's current (animated) transform in model space, as model_bones
+	// gives the bind pose: {pos, hpb}. hud: the first-person model (the world model when the gun shares it).
+	// nil when the object, model or bone is missing. For checking placement against the animated pose.
+	int lua_weapon_bone_pose(lua_State* L)
+	{
+		const u16 id = u16(lua_tointeger(L, 1));
+		LPCSTR bone = lua_tostring(L, 2);
+		const bool hud = !!lua_toboolean(L, 3);
+		CObject* obj = bone ? Level().Objects.net_Find(id) : nullptr;
+		CHudItem* item = obj ? smart_cast<CHudItem*>(obj) : nullptr;
+		IKinematics* K = nullptr;
+		if (hud)
+			K = item && item->HudItemData() ? item->HudItemData()->m_model : nullptr;
+		else
+			K = obj && obj->Visual() ? obj->Visual()->dcast_PKinematics() : nullptr;
+		const u16 b = K ? K->LL_BoneID(bone) : BI_NONE;
+		if (b == BI_NONE)
+		{
+			lua_pushnil(L);
+			return 1;
+		}
+		const Fmatrix& m = K->LL_GetTransform(b);
+		Fvector hpb;
+		m.getHPB(hpb);
+		hpb.mul(180.f / PI);
+		::luabind::object t = ::luabind::newtable(L);
+		t["pos"] = m.c;
+		t["hpb"] = hpb;
+		t.pushvalue();
 		return 1;
 	}
 
@@ -530,9 +566,116 @@ namespace instance_record_script
 			node["bone"] = n.bone.size() ? n.bone.c_str() : "";
 			node["drawn"] = n.att != nullptr;
 			node["reason"] = n.reason.c_str();
+			xr_string hides;
+			for (const shared_str& b : n.hides)
+				hides += (hides.empty() ? "" : ",") + xr_string(b.c_str());
+			node["hides"] = hides.c_str();
+			// 4c: the part's own bones that are hidden now (set_part_bone_visible, in the current view)
+			xr_string hidden;
+			if (n.att && n.att->Kinematics())
+			{
+				IKinematics* K = n.att->Kinematics();
+				for (u16 b = 0; b < K->LL_BoneCount(); ++b)
+					if (!K->LL_GetBoneVisible(b))
+						hidden += (hidden.empty() ? "" : ",") + xr_string(K->LL_BoneName_dbg(b));
+			}
+			node["hidden"] = hidden.c_str();
 			t[i++] = node;
 		}
 		return t;
+	}
+
+	// ---- 4c script hooks ---------------------------------------------------
+
+	static CWeaponPartTree* tree_of(CScriptGameObject* self)
+	{
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		return w ? w->part_tree_rw() : nullptr;
+	}
+
+	bool go_set_part_bone_visible_view(CScriptGameObject* self, u16 id, LPCSTR bone, bool visible, LPCSTR view)
+	{
+		CWeaponPartTree::EView v = CWeaponPartTree::VIEW_BOTH;
+		if (view && !xr_strcmp(view, "hud"))
+			v = CWeaponPartTree::VIEW_HUD;
+		else if (view && !xr_strcmp(view, "world"))
+			v = CWeaponPartTree::VIEW_WORLD;
+		else if (view && *view && xr_strcmp(view, "both"))
+		{
+			Msg("! [weapon parts] set_part_bone_visible: view must be \"hud\", \"world\" or \"both\", not \"%s\"", view);
+			return false;
+		}
+		CWeaponPartTree* t = tree_of(self);
+		if (!t || !t->set_bone_visible(id, bone, visible, v))
+			return false;
+		smart_cast<CWeapon*>(&self->object())->parts_update(); // applies it now
+		return true;
+	}
+
+	bool go_set_part_bone_visible(CScriptGameObject* self, u16 id, LPCSTR bone, bool visible)
+	{
+		return go_set_part_bone_visible_view(self, id, bone, visible, nullptr);
+	}
+
+	bool go_attach_part_light_bone(CScriptGameObject* self, u16 id, const ::luabind::object& light, LPCSTR bone)
+	{
+		std::optional<AttachmentScriptLight*> l = ::luabind::object_cast_nothrow<AttachmentScriptLight*>(light);
+		if (!l || !*l)
+		{
+			Msg("! [weapon parts] attach_part_light: the light must be an attachment_script_light");
+			return false;
+		}
+		CWeaponPartTree* t = tree_of(self);
+		if (!t)
+			return false;
+		lua_State* L = light.lua_state();
+		light.pushvalue();
+		const int ref = luaL_ref(L, LUA_REGISTRYINDEX); // keeps the script's light alive while the part has it
+		return t->attach_light(id, *l, ref, bone);
+	}
+
+	bool go_attach_part_light(CScriptGameObject* self, u16 id, const ::luabind::object& light)
+	{
+		return go_attach_part_light_bone(self, id, light, nullptr);
+	}
+
+	bool go_detach_part_light(CScriptGameObject* self, u16 id)
+	{
+		CWeaponPartTree* t = tree_of(self);
+		return t && t->detach_light(id);
+	}
+
+	::luabind::object go_get_part_transform(lua_State* L, CScriptGameObject* self, u16 id, LPCSTR bone, bool hud)
+	{
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		CWeaponPartTree* t = tree_of(self);
+		if (!w || !t)
+			return ::luabind::object();
+		IKinematics* model = nullptr;
+		const Fmatrix* xform = nullptr;
+		if (hud)
+		{
+			attachable_hud_item* h = w->HudItemData();
+			if (h)
+			{
+				model = h->m_model;
+				xform = &h->m_item_transform;
+			}
+		}
+		else if (w->Visual())
+		{
+			model = w->Visual()->dcast_PKinematics();
+			xform = &w->XFORM();
+		}
+		Fmatrix m;
+		if (!model || !t->part_xform(id, bone, model, *xform, m))
+			return ::luabind::object();
+		return ::luabind::object(L, m);
+	}
+
+	::luabind::object go_get_part_transform_origin(lua_State* L, CScriptGameObject* self, u16 id, bool hud)
+	{
+		return go_get_part_transform(L, self, id, nullptr, hud);
 	}
 
 	// ---- server item ----------------------------------------------------
@@ -667,4 +810,5 @@ void weapon_parts_registrator::script_register(lua_State* L)
 {
 	lua_register(L, "model_bones", &lua_model_bones);
 	lua_register(L, "bone_bind_transform", &lua_bone_bind_transform);
+	lua_register(L, "weapon_bone_pose", &lua_weapon_bone_pose);
 }

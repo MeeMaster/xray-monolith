@@ -653,6 +653,13 @@ void script_attachment::ForceUpdateXFORM(bool recursive)
 		renderable.xform.mul_43(m_parent_attachment->XFORM(), BoneTransform(m_parent_attachment->Visual()->dcast_PKinematics()));
 		renderable.xform.mulB_43(m_offset);
 	}
+	else if (m_toplevel_parent && m_toplevel_parent->Visual() && m_toplevel_parent->Visual()->dcast_PKinematics())
+	{
+		// An engine-owned weapon part (WEAPON_ENGINE_PLAN.md 8.2, 4c): not in the object's attachment
+		// list, but hangs from m_parent_bone of the object's world model
+		renderable.xform.mul_43(m_toplevel_parent->XFORM(), BoneTransform(m_toplevel_parent->Visual()->dcast_PKinematics()));
+		renderable.xform.mulB_43(m_offset);
+	}
     else
     {
         renderable.xform.identity();
@@ -978,6 +985,29 @@ void script_attachment::SetParentLevel()
     impl->approximate = ac_impl->approximate;
     CopyMemory(impl->hemi_cube, ac_impl->hemi_cube, sizeof(impl->hemi_cube));
     CopyMemory(impl->hemi_cube_smooth, ac_impl->hemi_cube_smooth, sizeof(impl->hemi_cube_smooth));
+}
+
+void script_attachment::StopMotions()
+{
+	m_bStopAtEndAnimIsRunning = false;
+	xr_delete(m_motion_end_cb);
+	IKinematicsAnimated* k = Kinematics() ? Kinematics()->dcast_PKinematicsAnimated() : nullptr;
+	if (!k)
+		return;
+	const u16 pc = k->partitions().count();
+	for (u16 pid = 0; pid < pc; ++pid)
+		k->LL_CloseCycle(pid, u8(-1));
+	m_current_motion = "";
+	Kinematics()->CalculateBones_Invalidate();
+	Kinematics()->CalculateBones(TRUE);
+}
+
+u16 script_attachment::ShellParentBone()
+{
+	script_attachment* top = this;
+	while (top->m_parent_attachment)
+		top = top->m_parent_attachment;
+	return top->m_parent_bone;
 }
 
 void script_attachment::SetTopLevelParent(CGameObject* obj)
@@ -1396,7 +1426,7 @@ void script_attachment::AddToParentShell(CGameObject* obj)
 	attachment_shell->Activate(true, true);
 	attachment_shell->SetAirResistance();
 
-	CPhysicsElement* attachment_bone = shell->get_PhysicsParrentElement(m_parent_bone);
+	CPhysicsElement* attachment_bone = shell->get_PhysicsParrentElement(ShellParentBone());
 	if (!attachment_bone)
 	{
 		destroy_physics_shell(attachment_shell);
@@ -1471,7 +1501,7 @@ void script_attachment::RemoveFromParentShell(CGameObject* obj)
 	CPhysicsShell* shell = phsupport ? phsupport->physics_shell() : holder->m_pPhysicsShell;
 	if (!shell || !shell->isActive()) return;
 
-	CPhysicsElement* attachachment_bone = shell->get_PhysicsParrentElement(m_parent_bone);
+	CPhysicsElement* attachachment_bone = shell->get_PhysicsParrentElement(ShellParentBone());
 	if (attachachment_bone)
 	{
 		for (auto* geom : m_attachment_geoms)

@@ -106,6 +106,8 @@ public:
 	virtual void activate_physic_shell();
 	virtual void setup_physic_shell();
 	virtual void deactivate_physics_shell();
+	// Attachments the object owns outside its attachment list (weapon parts, 4c) add or remove their collision
+	virtual void on_shell_attachments(bool create) {}
 
 	virtual void net_Destroy();
 	virtual BOOL net_Spawn(CSE_Abstract* DC);

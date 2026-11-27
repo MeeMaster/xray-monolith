@@ -10,14 +10,217 @@
 #include "script_attachment_manager.h"
 #include "../xrServerEntities/InstanceRecord.h"
 #include "../Include/xrRender/Kinematics.h"
+#include "GameObject.h"
+#include "script_light_inline.h"
+#include "ai_space.h"
+#include "script_engine.h"
+
+CWeaponPartTree::~CWeaponPartTree()
+{
+	clear();
+	for (auto& it : m_overrides)
+		release_light(it.second);
+}
+
+void CWeaponPartTree::release_light(SOverride& o)
+{
+	o.light = nullptr;
+	if (o.light_ref != LUA_NOREF && o.light_ref != LUA_REFNIL)
+		luaL_unref(ai().script_engine().lua(), LUA_REGISTRYINDEX, o.light_ref);
+	o.light_ref = LUA_NOREF;
+}
+
+const CWeaponPartTree::SNode* CWeaponPartTree::find(u16 id) const
+{
+	for (const SNode& n : m_nodes)
+		if (n.id == id)
+			return &n;
+	return nullptr;
+}
+
+void CWeaponPartTree::hook_up(SNode& n)
+{
+	auto it = m_overrides.find(n.id);
+	if (it == m_overrides.end() || !n.att || !it->second.light)
+		return;
+	n.att->AttachLight(it->second.light);
+	n.att->SetScriptLightBone(it->second.light_bone.size() ? it->second.light_bone.c_str() : "");
+}
+
+bool CWeaponPartTree::set_bone_visible(u16 id, LPCSTR bone, bool visible, EView view)
+{
+	if (!bone || !*bone || !find(id))
+		return false;
+	SOverride& o = m_overrides[id];
+	const shared_str b = bone;
+	if (std::find(o.touched.begin(), o.touched.end(), b) == o.touched.end())
+		o.touched.push_back(b);
+	for (int v = VIEW_BOTH; v <= VIEW_WORLD; ++v)
+	{
+		if (view != VIEW_BOTH && v != view)
+			continue;
+		xr_vector<shared_str>& list = o.hidden[v];
+		auto at = std::find(list.begin(), list.end(), b);
+		if (!visible && at == list.end())
+			list.push_back(b);
+		else if (visible && at != list.end())
+			list.erase(at);
+		// "both" covers either view, so showing a bone in one view also lifts a hide set for both
+		if (visible && view != VIEW_BOTH)
+		{
+			xr_vector<shared_str>& both = o.hidden[VIEW_BOTH];
+			auto bt = std::find(both.begin(), both.end(), b);
+			if (bt != both.end())
+			{
+				both.erase(bt);
+				const int other = view == VIEW_HUD ? VIEW_WORLD : VIEW_HUD;
+				if (std::find(o.hidden[other].begin(), o.hidden[other].end(), b) == o.hidden[other].end())
+					o.hidden[other].push_back(b);
+			}
+		}
+	}
+	m_view = -1;
+	return true;
+}
+
+void CWeaponPartTree::apply_view(bool hud)
+{
+	const int view = hud ? VIEW_HUD : VIEW_WORLD;
+	if (m_view == view)
+		return;
+	m_view = view;
+	for (SNode& n : m_nodes)
+	{
+		auto it = m_overrides.find(n.id);
+		if (!n.att || it == m_overrides.end())
+			continue;
+		const SOverride& o = it->second;
+		IKinematics* K = n.att->Kinematics();
+		auto hidden = [&](const shared_str& b) {
+			return std::find(o.hidden[VIEW_BOTH].begin(), o.hidden[VIEW_BOTH].end(), b) != o.hidden[VIEW_BOTH].end()
+				|| std::find(o.hidden[view].begin(), o.hidden[view].end(), b) != o.hidden[view].end();
+		};
+		// Shown first, then hidden, so hiding a parent wins over showing its child
+		for (int pass = 0; pass < 2; ++pass)
+			for (const shared_str& b : o.touched)
+			{
+				const bool hide = hidden(b);
+				if (hide != (pass == 1))
+					continue;
+				const u16 bid = K->LL_BoneID(b);
+				if (bid != BI_NONE && !!K->LL_GetBoneVisible(bid) == hide)
+					K->LL_SetBoneVisible(bid, !hide, TRUE);
+			}
+		K->CalculateBones_Invalidate();
+	}
+}
+
+bool CWeaponPartTree::attach_light(u16 id, AttachmentScriptLight* light, int lua_ref, LPCSTR bone)
+{
+	if (!light || !find(id))
+	{
+		if (lua_ref != LUA_NOREF && lua_ref != LUA_REFNIL)
+			luaL_unref(ai().script_engine().lua(), LUA_REGISTRYINDEX, lua_ref);
+		return false;
+	}
+	detach_light(id);
+	SOverride& o = m_overrides[id];
+	o.light = light;
+	o.light_ref = lua_ref;
+	o.light_bone = bone && *bone ? bone : "";
+	for (SNode& n : m_nodes)
+		if (n.id == id)
+			hook_up(n);
+	return true;
+}
+
+bool CWeaponPartTree::detach_light(u16 id)
+{
+	auto it = m_overrides.find(id);
+	if (it == m_overrides.end() || !it->second.light)
+		return false;
+	for (SNode& n : m_nodes)
+		if (n.id == id && n.att && n.att->GetLight() == it->second.light)
+			n.att->DetachLight();
+	release_light(it->second);
+	return true;
+}
+
+bool CWeaponPartTree::part_xform(u16 id, LPCSTR bone, IKinematics* gun, const Fmatrix& gun_xform, Fmatrix& out) const
+{
+	const SNode* node = find(id);
+	if (!node || !node->att || !gun)
+		return false;
+
+	// The chain from the top-level part down to this one
+	xr_vector<const SNode*> chain;
+	for (const SNode* n = node; n; n = n->parent ? find(n->parent) : nullptr)
+	{
+		if (!n->att)
+			return false;
+		chain.push_back(n);
+	}
+	std::reverse(chain.begin(), chain.end());
+
+	Fmatrix m = gun_xform;
+	IKinematics* model = gun;
+	for (const SNode* n : chain)
+	{
+		const u16 b = model->LL_BoneID(n->bone);
+		if (b == BI_NONE)
+			return false;
+		m.mulB_43(model->LL_GetTransform(b));
+		m.mulB_43(n->att->GetOffset());
+		model = n->att->Kinematics();
+	}
+	if (bone && *bone)
+	{
+		const u16 b = model->LL_BoneID(bone);
+		if (b == BI_NONE)
+			return false;
+		m.mulB_43(model->LL_GetTransform(b));
+	}
+	out = m;
+	return true;
+}
 
 void CWeaponPartTree::clear()
 {
+	// Lights stay with the tree (m_overrides); the attachments only point at them
+	for (SNode& n : m_nodes)
+		if (n.att && n.att->GetLight())
+			n.att->DetachLight();
 	// A child attachment is owned by its parent attachment, so only roots are deleted here
 	for (SNode& n : m_nodes)
 		if (n.att && !n.parent)
+		{
+			n.att->OnParentDestroyPhysicsShell(); // its collision leaves the gun's shell (children too)
 			xr_delete(n.att);
+		}
 	m_nodes.clear();
+}
+
+void CWeaponPartTree::shell(bool create)
+{
+	for (SNode& n : m_nodes)
+		if (n.att && !n.parent)
+		{
+			if (create)
+				n.att->OnParentCreatePhysicsShell();
+			else
+				n.att->OnParentDestroyPhysicsShell();
+		}
+}
+
+void CWeaponPartTree::hidden_bones(xr_vector<shared_str>& out) const
+{
+	out.clear();
+	for (const SNode& n : m_nodes)
+		if (n.att)
+			for (const shared_str& b : n.hides)
+				if (std::find(out.begin(), out.end(), b) == out.end())
+					out.push_back(b);
+	std::sort(out.begin(), out.end(), [](const shared_str& a, const shared_str& b) { return xr_strcmp(a, b) < 0; });
 }
 
 u32 CWeaponPartTree::drawn() const
@@ -29,7 +232,7 @@ u32 CWeaponPartTree::drawn() const
 	return n;
 }
 
-void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, LPCSTR owner)
+void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, LPCSTR owner, CGameObject* holder)
 {
 	clear();
 	if (record.is_opaque() || record.parts.empty())
@@ -96,14 +299,28 @@ void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, 
 						string32 name;
 						xr_sprintf(name, "mw_part:%u", u32(part.id));
 						script_attachment* att = xr_new<script_attachment>(name, node.model.c_str());
+						// A part shows its bind pose: the attachment starts the model's "idle", which on a
+						// single-model gun is the first-person idle and moves the whole part away from its bone
+						att->StopMotions();
 						att->SetPosition(pl.pos);
 						att->SetRotation(pl.hpb);
 						if (parent)
 						{
-							att->SetParent(parent->att);
+							att->SetParent(parent->att); // takes the holder from its parent
 							att->SetParentBone(pl.bone.c_str()); // looked up on the parent part's model
 						}
+						else
+						{
+							// Not parented to the object (the tree draws it), but the physics code needs the
+							// gun bone and the holder to put its collision on the dropped gun's shell
+							att->SetParentBone(parent_model->LL_BoneID(pl.bone));
+							att->SetTopLevelParent(holder);
+						}
+						att->Kinematics()->CalculateBones_Invalidate();
+						att->Kinematics()->CalculateBones(TRUE);
+						att->SetUsePHShapes(true); // adds the collision now if the gun lies in the world
 						node.att = att;
+						node.hides = pl.hides;
 					}
 				}
 			}
@@ -114,6 +331,25 @@ void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, 
 	}
 	for (const SInstancePart* p : todo)
 		Msg("! [weapon parts] %s: part %u [%s] has a parent that isn't in the record; not drawn", owner, u32(p->id), p->section.c_str());
+
+	// Script hooks: drop those of parts that left the record, give the rest to the new attachments
+	for (auto it = m_overrides.begin(); it != m_overrides.end();)
+	{
+		bool kept = false;
+		for (const SInstancePart& p : record.parts)
+			if (p.id == it->first)
+				kept = true;
+		if (kept)
+			++it;
+		else
+		{
+			release_light(it->second);
+			it = m_overrides.erase(it);
+		}
+	}
+	for (SNode& n : m_nodes)
+		hook_up(n);
+	m_view = -1;
 }
 
 void CWeaponPartTree::render(IKinematics* model, const Fmatrix& xform)

@@ -228,6 +228,11 @@ public:
 	void SetParentBone(u16 bone_id);
 	void SetParentBone(LPCSTR bone);
 	u16 GetParentBone() { return m_parent_bone; }
+	// The bone of the top-level parent object the whole chain hangs from (a nested attachment's own
+	// parent bone is on its parent attachment's model, not on the object's physics shell)
+	u16 ShellParentBone();
+	// Stops every motion, so the model shows its bind pose (engine weapon parts, 4c). PlayMotion starts them again.
+	void StopMotions();
 
 	void CreatePhysicsShell();
 	void SetPHFreeze(bool freeze);
