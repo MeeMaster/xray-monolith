@@ -464,6 +464,7 @@
     <ClInclude Include="..\xrServerEntities\xrServer_Objects_ALife.h" />
     <ClInclude Include="..\xrServerEntities\xrServer_Objects_ALife_All.h" />
     <ClInclude Include="..\xrServerEntities\xrServer_Objects_ALife_Items.h" />
+    <ClInclude Include="..\xrServerEntities\InstanceRecord.h" />
     <ClInclude Include="..\xrServerEntities\xrServer_Objects_ALife_Monsters.h" />
     <ClInclude Include="..\xrServerEntities\xrServer_Objects_Alife_Smartcovers.h" />
     <ClInclude Include="..\xrServerEntities\xrServer_Object_Base.h" />
@@ -1252,6 +1253,9 @@
     <ClInclude Include="InventoryBox.h" />
     <ClInclude Include="InventoryOwner.h" />
     <ClInclude Include="inventory_item.h" />
+    <ClInclude Include="instance_section.h" />
+    <ClInclude Include="stat_mods.h" />
+    <ClInclude Include="instance_record_script.h" />
     <ClInclude Include="inventory_item_impl.h" />
     <ClInclude Include="inventory_item_inline.h" />
     <ClInclude Include="inventory_item_object.h" />
@@ -2127,6 +2131,7 @@
     <ClCompile Include="..\xrServerEntities\xrServer_Objects_Abstract.cpp" />
     <ClCompile Include="..\xrServerEntities\xrServer_Objects_ALife.cpp" />
     <ClCompile Include="..\xrServerEntities\xrServer_Objects_ALife_Items.cpp" />
+    <ClCompile Include="..\xrServerEntities\InstanceRecord.cpp" />
     <ClCompile Include="..\xrServerEntities\xrServer_Objects_ALife_Items_script.cpp">
       <PrecompiledHeaderFile>pch_script.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)$(ProjectName)_script.pch</PrecompiledHeaderOutputFile>
@@ -3032,6 +3037,12 @@
       <PrecompiledHeaderOutputFile>$(IntDir)$(ProjectName)_script.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
     <ClCompile Include="InventoryOwner_script.cpp">
+      <PrecompiledHeaderFile>pch_script.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)$(ProjectName)_script.pch</PrecompiledHeaderOutputFile>
+    </ClCompile>
+    <ClCompile Include="instance_section.cpp" />
+    <ClCompile Include="stat_mods.cpp" />
+    <ClCompile Include="instance_record_script.cpp">
       <PrecompiledHeaderFile>pch_script.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)$(ProjectName)_script.pch</PrecompiledHeaderOutputFile>
     </ClCompile>

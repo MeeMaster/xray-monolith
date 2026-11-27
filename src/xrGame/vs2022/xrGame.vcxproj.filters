@@ -5640,6 +5640,12 @@
     <ClInclude Include="..\inventory_item.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
+    <ClInclude Include="..\instance_section.h">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClInclude>
+    <ClInclude Include="..\instance_record_script.h">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClInclude>
     <ClInclude Include="..\inventory_item_impl.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
@@ -6616,6 +6622,9 @@
       <Filter>Core\Server\ServerEntities\objects_alife</Filter>
     </ClInclude>
     <ClInclude Include="..\..\xrServerEntities\xrServer_Objects_ALife_Items.h">
+      <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\xrServerEntities\InstanceRecord.h">
       <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
     </ClInclude>
     <ClInclude Include="..\..\xrServerEntities\xrServer_Objects_ALife_Monsters.h">
@@ -9254,6 +9263,12 @@
     <ClCompile Include="..\inventory_item.cpp">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClCompile>
+    <ClCompile Include="..\instance_section.cpp">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\instance_record_script.cpp">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClCompile>
     <ClCompile Include="..\inventory_item_upgrade.cpp">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClCompile>
@@ -10191,6 +10206,9 @@
       <Filter>Core\Server\ServerEntities\objects_alife</Filter>
     </ClCompile>
     <ClCompile Include="..\..\xrServerEntities\xrServer_Objects_ALife_Items.cpp">
+      <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\xrServerEntities\InstanceRecord.cpp">
       <Filter>Core\Server\ServerEntities\objects_alife_items</Filter>
     </ClCompile>
     <ClCompile Include="..\..\xrServerEntities\xrServer_Objects_ALife_Items_script.cpp">

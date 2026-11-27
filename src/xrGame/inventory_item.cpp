@@ -11,6 +11,10 @@
 
 //#include "stdafx.h"
 #include "pch_script.h"
+#include "instance_section.h"
+#include "ai_space.h"
+#include "alife_simulator.h"
+#include "alife_object_registry.h"
 #include "inventory_item.h"
 #include "inventory_item_impl.h"
 #include "inventory.h"
@@ -99,7 +103,12 @@ void CInventoryItem::Load(LPCSTR section)
 	ISpatial* self = smart_cast<ISpatial*>(this);
 	if (self) self->spatial.type |= STYPE_VISIBLEFORAI;
 
-	m_section_id._set(section);
+	// The base section stays the identity (trade, upgrades, scripts) when Load reads a generated one (5.3)
+	m_section_id = CInifile::is_dynamic_name(section) ? m_object->cNameSect() : shared_str(section);
+	// config_section() is valid from Load on. A Load from the base section (a rebuild after the overrides were
+	// cleared, 3a) must drop the old generated name.
+	m_instance_section = CInifile::is_dynamic_name(section) ? shared_str(section) : shared_str();
+	m_instance_section_stale = false;
 	m_name = CStringTable().translate(pSettings->r_string(section, "inv_name"));
 	m_nameShort = CStringTable().translate(pSettings->r_string(section, "inv_name_short"));
 
@@ -250,6 +259,9 @@ void CInventoryItem::UpdateCL()
 	{
 		Interpolate();
 	}
+	// 3c: state values reach the server copy at most every 0.5 s
+	if (m_instance_unsent && Device.dwTimeGlobal >= m_instance_flush_time)
+		send_instance_record(false);
 }
 
 void CInventoryItem::OnEvent(NET_Packet& P, u16 type)
@@ -338,6 +350,74 @@ bool CInventoryItem::Detach(const char* item_section_name, bool b_spawn_item)
 }
 
 /////////// network ///////////////////////////////
+shared_str CInventoryItem::instance_section() const
+{
+	if (m_instance_section_stale)
+		refresh_instance_section();
+	return m_instance_section.size() ? m_instance_section : object().cNameSect();
+}
+
+// WEAPON_ENGINE_PLAN.md 4.3 (change 2c): the whole record goes to the server, which replaces its copy
+bool CInventoryItem::set_instance_record(const CSE_InstanceRecord& record, bool defer_send)
+{
+	if (m_instance.is_opaque())
+	{
+		Msg("! [instance record] %s [%u] has a record from a newer build; it is read-only", object().cName().c_str(), object_id());
+		return false;
+	}
+	const bool config_changed = !m_instance.same_config(record);
+	m_instance = record;
+	if (config_changed)
+	{
+		// 2f/3c: rebuilt on the next config read, so several changes in one frame build it once
+		m_instance_section_stale = true;
+		send_instance_record(false);
+		on_instance_config_changed();
+		return true;
+	}
+	if (defer_send)
+		m_instance_unsent = true; // 3c: a state value; UpdateCL, save or net_Destroy sends it
+	else
+		send_instance_record(false);
+	return true;
+}
+
+u32 CInventoryItem::s_instance_sends = 0;
+u32 CInventoryItem::s_instance_builds = 0;
+
+void CInventoryItem::refresh_instance_section() const
+{
+	m_instance_section_stale = false;
+	m_instance_section = instance_section::build(object().cNameSect().c_str(), object_id(), m_instance, &m_upgrades); // 2f
+	++s_instance_builds;
+}
+
+void CInventoryItem::send_instance_record(bool direct)
+{
+	m_instance_unsent = false;
+	m_instance_flush_time = Device.dwTimeGlobal + 500;
+	++s_instance_sends;
+	if (direct)
+	{
+		// Straight into the server entity: no event that could arrive after the save is written or the
+		// object is gone. Without a simulator (level shutdown) there is no server copy left to update.
+		CSE_ALifeDynamicObject* e = ai().get_alife() ? ai().alife().objects().object(object_id(), true) : nullptr;
+		if (CSE_ALifeInventoryItem* se = smart_cast<CSE_ALifeInventoryItem*>(e))
+			se->m_instance = m_instance;
+		return;
+	}
+	NET_Packet P;
+	CGameObject::u_EventGen(P, GE_INSTANCE_RECORD, object_id());
+	m_instance.write(P);
+	CGameObject::u_EventSend(P);
+}
+
+void CInventoryItem::flush_instance_record(bool direct)
+{
+	if (m_instance_unsent)
+		send_instance_record(direct);
+}
+
 BOOL CInventoryItem::net_Spawn(CSE_Abstract* DC)
 {
 	VERIFY(!m_pInventory);
@@ -357,6 +437,15 @@ BOOL CInventoryItem::net_Spawn(CSE_Abstract* DC)
 
 	CSE_ALifeInventoryItem* pSE_InventoryItem = smart_cast<CSE_ALifeInventoryItem*>(e);
 	if (!pSE_InventoryItem) return TRUE;
+
+	m_instance = pSE_InventoryItem->m_instance; // WEAPON_ENGINE_PLAN.md 4.3
+	// 2f: g_sv_Spawn built the generated section before Load; remember it while it exists
+	{
+		const shared_str sect = instance_section::name(object().cNameSect().c_str(), object_id());
+		m_instance_section = pSettings->dynamic_section_exist(sect.c_str()) ? sect : shared_str();
+		m_instance_section_stale = false;
+		m_instance_unsent = false;
+	}
 
 	//!!!
 	m_fCondition = pSE_InventoryItem->m_fCondition;
@@ -378,6 +467,17 @@ BOOL CInventoryItem::net_Spawn(CSE_Abstract* DC)
 
 void CInventoryItem::net_Destroy()
 {
+	// 3c: a pending state value goes to the server copy, which outlives this object (offline, level change)
+	flush_instance_record(true);
+
+	// 2f: the generated section lives as long as the online object
+	m_instance_section_stale = false;
+	if (m_instance_section.size())
+	{
+		pSettings->remove_dynamic_section(m_instance_section.c_str());
+		m_instance_section = nullptr;
+	}
+
 	if (m_pInventory)
 	{
 		VERIFY(std::find(m_pInventory->m_all.begin(), m_pInventory->m_all.end(), this)==m_pInventory->m_all.end());
@@ -389,6 +489,7 @@ void CInventoryItem::net_Destroy()
 
 void CInventoryItem::save(NET_Packet& packet)
 {
+	flush_instance_record(true); // 3c: the server copy must be current before the game is written
 	packet.w_u16(m_ItemCurrPlace.value);
 	packet.w_float(m_fCondition);
 	//--	save_data				(m_upgrades, packet);

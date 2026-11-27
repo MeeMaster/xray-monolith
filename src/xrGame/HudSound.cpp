@@ -158,6 +158,11 @@ void HUD_SOUND_ITEM::StopSound(HUD_SOUND_ITEM& hud_snd)
 //----------------------------------------------------------
 HUD_SOUND_COLLECTION::~HUD_SOUND_COLLECTION()
 {
+	Clear();
+}
+
+void HUD_SOUND_COLLECTION::Clear()
+{
 	xr_vector<HUD_SOUND_ITEM>::iterator it = m_sound_items.begin();
 	xr_vector<HUD_SOUND_ITEM>::iterator it_e = m_sound_items.end();
 
@@ -250,14 +255,15 @@ sndShot is played, it will play all the sound items with the same alias.
 //----------------------------------------------------------
 HUD_SOUND_COLLECTION_LAYERED::~HUD_SOUND_COLLECTION_LAYERED()
 {
-	xr_vector<HUD_SOUND_COLLECTION>::iterator it = m_sound_items.begin();
-	xr_vector<HUD_SOUND_COLLECTION>::iterator it_e = m_sound_items.end();
+	Clear();
+}
 
-	for (; it != it_e; ++it)
-	{
-		it->~HUD_SOUND_COLLECTION();
-	}
-
+// Clear each collection first (stops and frees its sounds), then drop them. The old destructor called each
+// collection's destructor by hand and then clear() ran it a second time on the same objects.
+void HUD_SOUND_COLLECTION_LAYERED::Clear()
+{
+	for (HUD_SOUND_COLLECTION& c : m_sound_items)
+		c.Clear();
 	m_sound_items.clear();
 }
 

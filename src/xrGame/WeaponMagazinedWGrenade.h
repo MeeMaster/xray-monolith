@@ -25,6 +25,14 @@ public:
 
 	virtual void save(NET_Packet& output_packet);
 	virtual void load(IReader& input_packet);
+	virtual void instance_runtime_capture(SInstanceRuntime& rt) const;
+	virtual bool instance_runtime_is_default(const SInstanceRuntime& rt) const;
+	virtual void LoadSignature(xr_string& out) const;
+	virtual void runtime_snapshot(SWeaponRuntimeSnapshot& s) const;
+	virtual void runtime_prepare_load();
+	virtual void runtime_restore(const SWeaponRuntimeSnapshot& s, SWeaponRestoreReport& r);
+	// 3b: the list and magazine swap of PerformSwitchGL alone, without the zoom type, scope UI, rocket or sounds
+	void SwapLauncherLayout();
 
 
 	virtual bool Attach(PIItem pIItem, bool b_send_event);

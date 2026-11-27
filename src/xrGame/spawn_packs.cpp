@@ -20,9 +20,11 @@ namespace
 	using namespace spawn_overlays;
 
 	const LPCSTR PACK_MASK = "*.spawn";
-	// Packet version whose layout peek_graph_vertex reads.
-	const u16 PEEKED_SPAWN_VERSION = 128;
-	static_assert(SPAWN_VERSION == PEEKED_SPAWN_VERSION, "peek_graph_vertex mirrors Spawn_Read for version 128; update both");
+	// Packet versions whose header layout peek_graph_vertex reads. 129 only adds the instance record after the
+	// state block (CSE_Abstract::Spawn_Write), so the header and the first state field are the same as in 128.
+	const u16 PEEKED_SPAWN_VERSION_MIN = 128;
+	const u16 PEEKED_SPAWN_VERSION = 129;
+	static_assert(SPAWN_VERSION == PEEKED_SPAWN_VERSION, "peek_graph_vertex mirrors Spawn_Read for versions 128-129; update both");
 	static_assert(XRAI_CURRENT_VERSION == 10, "CGameGraphBuilder::readable_version lists the all.spawn layouts the pack readers walk; update it");
 
 	// The level.ai versions the CLevelGraph constructor accepts; keep in sync with it.
@@ -169,7 +171,7 @@ namespace
 			return u32(-1);
 		const u16 flags = packet.r_u16();
 		const u16 version = packet.r_u16();
-		if (!(flags & M_SPAWN_VERSION) || version != PEEKED_SPAWN_VERSION)
+		if (!(flags & M_SPAWN_VERSION) || version < PEEKED_SPAWN_VERSION_MIN || version > PEEKED_SPAWN_VERSION)
 			return u32(-1);
 		if (!has_bytes(packet, 2 * sizeof(u16) + sizeof(u16)))
 			return u32(-1);

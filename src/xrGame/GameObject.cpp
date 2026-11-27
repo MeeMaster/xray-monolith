@@ -37,6 +37,7 @@
 #include "CharacterPhysicsSupport.h"
 #include "debug_renderer.h"
 #include "../xrPhysics/PHElement.h"
+#include "instance_section.h"
 
 extern MagicBox3 MagicMinBox(int iQuantity, const Fvector* akPoint);
 
@@ -391,7 +392,16 @@ BOOL CGameObject::net_Spawn(CSE_Abstract* DC)
 			spatial.type = (spatial.type | STYPE_VISIBLEFORAI) ^ STYPE_VISIBLEFORAI;
 	}
 
-	reload(*cNameSect());
+	// 2g (WEAPON_ENGINE_PLAN.md 5.3): an item with a generated section reloads its config from it; the script
+	// binder keeps the base, which is how scripts identify the object
+	shared_str config = cNameSect();
+	if (E->cast_inventory_item())
+	{
+		const shared_str generated = instance_section::name(*cNameSect(), ID());
+		if (pSettings->dynamic_section_exist(*generated))
+			config = generated;
+	}
+	reload(*config);
 	if (!g_dedicated_server)
 		CScriptBinder::reload(*cNameSect());
 
@@ -1042,6 +1052,13 @@ void CGameObject::remove_visual_callback(visual_callback* callback)
 void CGameObject::SetKinematicsCallback(bool set)
 {
 	if (!Visual()) return;
+	// The HUD view shares this visual: one slot serves both callback lists (HudItem.cpp)
+	CHudItem* hud = smart_cast<CHudItem*>(this);
+	if (hud && hud->HudSharesWorldVisual())
+	{
+		hud->RefreshSharedVisualCallback(set);
+		return;
+	}
 	if (set)
 		smart_cast<IKinematics*>(Visual())->Callback(VisualCallback, this);
 	else

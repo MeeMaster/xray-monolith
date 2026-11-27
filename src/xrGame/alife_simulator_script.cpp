@@ -481,6 +481,7 @@ CSE_Abstract* try_to_clone_object(CALifeSimulator* self, CSE_Abstract* object, L
 		clone->m_fCondition = wpnmag->m_fCondition;
 		clone->ammo_type = wpnmag->ammo_type;
 		clone->m_upgrades = wpnmag->m_upgrades;
+		clone->m_instance = wpnmag->m_instance; // WEAPON_ENGINE_PLAN.md 4.3
 		clone->set_ammo_elapsed(wpnmag->get_ammo_elapsed());
 
 		return bRegister ? reprocess_spawn(self, absClone) : absClone;

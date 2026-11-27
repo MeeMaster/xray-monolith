@@ -44,7 +44,18 @@ void CWeaponMagazinedWGrenade::Load(LPCSTR section)
 
 	if (m_eGrenadeLauncherStatus == ALife::eAddonPermanent)
 	{
-		CRocketLauncher::m_fLaunchSpeed = pSettings->r_float(section, "grenade_vel");
+		// A built-in launcher needs grenade_vel. Guns made for an attachable one only have it on the launcher item,
+		// so a config switched to built-in (an override, 3b) falls back to that instead of a fatal error.
+		if (pSettings->line_exist(section, "grenade_vel"))
+			CRocketLauncher::m_fLaunchSpeed = pSettings->r_float(section, "grenade_vel");
+		else
+		{
+			LPCSTR item = READ_IF_EXISTS(pSettings, r_string, section, "grenade_launcher_name", nullptr);
+			if (item && pSettings->line_exist(item, "grenade_vel"))
+				CRocketLauncher::m_fLaunchSpeed = pSettings->r_float(item, "grenade_vel");
+			Msg("! [%s] built-in grenade launcher without grenade_vel; using %s", section,
+				(item && pSettings->line_exist(item, "grenade_vel")) ? item : "the previous value");
+		}
 	}
 	LoadLauncherKoeffs();
 
@@ -1318,3 +1329,115 @@ void CWeaponMagazinedWGrenade::UnloadRocket()
 	}
 }
 #endif
+
+void CWeaponMagazinedWGrenade::LoadSignature(xr_string& out) const
+{
+	inherited::LoadSignature(out);
+	string128 buf;
+	xr_sprintf(buf, " grenade_types=%u gl_mode=%d launch_speed=%.2f", u32(m_ammoTypes2.size()), int(m_bGrenadeMode),
+		CRocketLauncher::m_fLaunchSpeed);
+	out += buf;
+}
+
+void CWeaponMagazinedWGrenade::SwapLauncherLayout()
+{
+	m_bGrenadeMode = !m_bGrenadeMode;
+	iMagazineSize = m_bGrenadeMode ? 1 : iMagazineSize2;
+	m_ammoTypes.swap(m_ammoTypes2);
+	swap(m_ammoType, m_ammoType2);
+	swap(m_DefaultCartridge, m_DefaultCartridge2);
+	m_magazine.swap(m_magazine2);
+	iAmmoElapsed = (int)m_magazine.size();
+}
+
+// 3b: rifle and launcher rounds are kept apart whatever mode the gun is in
+void CWeaponMagazinedWGrenade::runtime_snapshot(SWeaponRuntimeSnapshot& s) const
+{
+	inherited::runtime_snapshot(s); // reads m_magazine and m_ammoTypes, which hold the grenades in launcher mode
+	s.gl_mode = m_bGrenadeMode;
+	const xr_vector<CCartridge>& other = m_magazine2;
+	xr_vector<shared_str> other_rounds;
+	other_rounds.reserve(other.size());
+	for (const CCartridge& c : other)
+		other_rounds.push_back(c.m_ammoSect);
+	const shared_str other_type = m_ammoType2 < m_ammoTypes2.size() ? m_ammoTypes2[m_ammoType2] : shared_str();
+	if (m_bGrenadeMode)
+	{
+		s.grenades.swap(s.rounds);
+		s.grenade_type = s.ammo_type;
+		s.rounds.swap(other_rounds);
+		s.ammo_type = other_type;
+		s.next_ammo_type = shared_str(); // chosen from the grenade list; a reload in rifle mode picks again
+	}
+	else
+	{
+		s.grenades.swap(other_rounds);
+		s.grenade_type = other_type;
+	}
+}
+
+// Load reads the rifle lists into m_ammoTypes and the grenade lists into m_ammoTypes2, as on a fresh spawn
+void CWeaponMagazinedWGrenade::runtime_prepare_load()
+{
+	inherited::runtime_prepare_load();
+	if (m_bGrenadeMode)
+		SwapLauncherLayout();
+}
+
+void CWeaponMagazinedWGrenade::runtime_restore(const SWeaponRuntimeSnapshot& s, SWeaponRestoreReport& r)
+{
+	inherited::runtime_restore(s, r); // rifle layout: m_magazine is the rifle magazine
+	runtime_check_ammo_list(m_ammoTypes2, "grenade_class", r.ammo_dropped);
+
+	// The launcher holds one grenade, and none when the new config has no launcher
+	const bool launcher = IsGrenadeLauncherAttached();
+	xr_vector<shared_str> unload;
+	runtime_fill_magazine(m_magazine2, m_ammoTypes2, s.grenades, launcher ? 1u : 0u, unload);
+	iAmmoElapsed2 = int(m_magazine2.size());
+	r.grenades_unloaded = u32(unload.size());
+	unload_rounds_to_owner(unload, &r.unloaded);
+
+	const int t = find_ammo_type(m_ammoTypes2, s.grenade_type);
+	m_ammoType2 = u8(t >= 0 ? t : 0);
+	if (!m_ammoTypes2.empty())
+		m_DefaultCartridge2.Load(m_ammoTypes2[m_ammoType2].c_str(), m_ammoType2, m_APk);
+
+	// The fake grenade in the barrel goes with the last grenade
+	if (m_magazine2.empty() && getRocketCount())
+		UnloadRocket();
+
+	if (!s.gl_mode)
+		return;
+	if (launcher)
+	{
+		SwapLauncherLayout(); // zoom type and rocket were left as they were in launcher mode
+		if (!getRocketCount() && iAmmoElapsed)
+			CRocketLauncher::SpawnRocket(pSettings->r_string(m_ammoTypes[m_ammoType].c_str(), "fake_grenade_name"), this);
+		UpdateUIScope();
+		return;
+	}
+	// The launcher is gone: back to the rifle's zoom, as PerformSwitchGL does
+	r.gl_mode_kept = false;
+	SetZoomType(useSeparateUBGLKeybind && g_aimmode_remember ? zoomTypeBeforeLauncher : 0);
+	UpdateUIScope();
+}
+
+// 2d (WEAPON_ENGINE_PLAN.md 4.1): launcher mode joins the runtime block. In launcher mode the rifle rounds sit
+// in m_magazine2, so they are what the record keeps.
+void CWeaponMagazinedWGrenade::instance_runtime_capture(SInstanceRuntime& rt) const
+{
+	inherited::instance_runtime_capture(rt);
+	rt.gl_mode = m_bGrenadeMode ? 1 : 0;
+	if (m_bGrenadeMode)
+	{
+		rt.rounds.clear();
+		const u32 n = _min(u32(m_magazine2.size()), u32(CSE_InstanceRecord::MAX_ROUNDS));
+		for (u32 i = 0; i < n; ++i)
+			rt.rounds.push_back(m_magazine2[i].m_LocalAmmoType);
+	}
+}
+
+bool CWeaponMagazinedWGrenade::instance_runtime_is_default(const SInstanceRuntime& rt) const
+{
+	return !rt.gl_mode && inherited::instance_runtime_is_default(rt);
+}

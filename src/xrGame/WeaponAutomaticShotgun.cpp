@@ -295,7 +295,7 @@ void CWeaponAutomaticShotgun::OnMotionMark(u32 state, const motion_marks& M, flo
         return;
     }
 
-    shared_str reloadMarkName = READ_IF_EXISTS(pSettings, r_string, cNameSect(), "motion_mark_reload", "");
+    shared_str reloadMarkName = READ_IF_EXISTS(pSettings, r_string, config_section(), "motion_mark_reload", "");
     if ((m_sub_state == eSubstateReloadInProcess || m_sub_state == eSubstateReloadBegin) && (state == eReload) && (reloadMarkName.size() == 0 || reloadMarkName == M.name))
     {
         AddCartridge(1);

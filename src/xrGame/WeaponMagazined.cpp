@@ -150,6 +150,10 @@ void CWeaponMagazined::Load(LPCSTR section)
 
 	m_sSndShotCurrent = IsSilencerAttached() ? "sndSilencerShot" : "sndShot";
 
+	// Only set below when the section has them; a second Load from a section without them must not keep the
+	// old ones (3a)
+	m_sSilencerFlameParticles = m_sSilencerSmokeParticles = NULL;
+
 	//звуки и партиклы глушителя, еслит такой есть
 	if (m_eSilencerStatus == ALife::eAddonAttachable || m_eSilencerStatus == ALife::eAddonPermanent ||
 		!m_bUseEngineAttachments)
@@ -201,6 +205,8 @@ void CWeaponMagazined::Load(LPCSTR section)
 	else
 	{
 		m_bHasDifferentFireModes = false;
+		m_aFireModes.clear();
+		m_iPrefferedFireMode = -1;
 	}
 	LoadSilencerKoeffs();
 	LoadScopeKoeffs();
@@ -903,6 +909,7 @@ void CWeaponMagazined::OnShot()
 
 	// Animation
 	PlayAnimShoot();
+	PlayWorldShotMotion();
 
 	// Update bullets
 	HUD_VisualBulletUpdate();
@@ -1562,7 +1569,7 @@ void CWeaponMagazined::InitAddons()
 		m_sSndShotCurrent = "sndSilencerShot";
 
 		//Load silencer values
-		LoadLights(*cNameSect(), "silencer_");
+		LoadLights(*config_section(), "silencer_");
 		ApplySilencerKoeffs();
 	}
 	else
@@ -1572,7 +1579,7 @@ void CWeaponMagazined::InitAddons()
 		m_sSndShotCurrent = "sndShot";
 
 		//Load normal values
-		LoadLights(*cNameSect(), "");
+		LoadLights(*config_section(), "");
 		ResetSilencerKoeffs();
 	}
 
@@ -1762,7 +1769,7 @@ void CWeaponMagazined::OnMotionMark(u32 state, const motion_marks& M, float mark
 	inherited::OnMotionMark(state, M, mark_start, mark_end);
 
     // Edited by Verdatim 18.4.2026
-    shared_str reloadMarkName = READ_IF_EXISTS(pSettings, r_string, cNameSect(), "motion_mark_reload", "");
+    shared_str reloadMarkName = READ_IF_EXISTS(pSettings, r_string, config_section(), "motion_mark_reload", "");
 	if (state == eReload && (reloadMarkName.size() == 0 || reloadMarkName == M.name))
 	{
 		if (bClearJamOnly && (!m_bUseStrictReloadMark || xr_strcmp(M.name.c_str(), "clear_jam") == 0))
@@ -2301,4 +2308,67 @@ void CWeaponMagazined::FireBullet(const Fvector& pos,
 	}
 
 	inherited::FireBullet(pos, shot_dir, fire_disp, cartridge, parent_id, weapon_id, send_hit, GetAmmoElapsed());
+}
+
+// 2d (WEAPON_ENGINE_PLAN.md 4.1): the fire mode joins the runtime block
+void CWeaponMagazined::instance_runtime_capture(SInstanceRuntime& rt) const
+{
+	inherited::instance_runtime_capture(rt);
+	rt.fire_mode = u8(m_iCurFireMode & 0xff);
+}
+
+bool CWeaponMagazined::instance_runtime_is_default(const SInstanceRuntime& rt) const
+{
+	// Load starts in the last listed mode
+	const u8 default_mode = m_aFireModes.empty() ? 0 : u8(m_aFireModes.size() - 1);
+	return rt.fire_mode == default_mode && inherited::instance_runtime_is_default(rt);
+}
+
+void CWeaponMagazined::LoadSignature(xr_string& out) const
+{
+	inherited::LoadSignature(out);
+	string128 buf;
+	xr_sprintf(buf, " fire_modes=%u cur_mode=%d silencer_fx=%s", u32(m_aFireModes.size()), m_iCurFireMode,
+		(m_sSilencerFlameParticles && *m_sSilencerFlameParticles) ? m_sSilencerFlameParticles : "-");
+	out += buf;
+}
+
+// 3b: the fire mode is kept by value, so it survives a list that changed order or size
+void CWeaponMagazined::runtime_snapshot(SWeaponRuntimeSnapshot& s) const
+{
+	inherited::runtime_snapshot(s);
+	s.has_fire_mode = m_bHasDifferentFireModes && m_iCurFireMode >= 0 && m_iCurFireMode < int(m_aFireModes.size());
+	if (s.has_fire_mode)
+		s.fire_mode = m_aFireModes[m_iCurFireMode];
+}
+
+void CWeaponMagazined::runtime_restore(const SWeaponRuntimeSnapshot& s, SWeaponRestoreReport& r)
+{
+	inherited::runtime_restore(s, r);
+	if (!s.has_fire_mode || m_aFireModes.empty())
+	{
+		r.fire_mode_kept = !s.has_fire_mode;
+		return;
+	}
+	// Load already selected the default mode; keep it when the old one is gone
+	int found = -1;
+	for (u32 i = 0; i < m_aFireModes.size(); ++i)
+		if (m_aFireModes[i] == s.fire_mode)
+			found = int(i);
+	r.fire_mode_kept = found >= 0;
+	if (found >= 0)
+		m_iCurFireMode = found;
+	if (m_bHasDifferentFireModes && smart_cast<CActor*>(H_Parent()))
+		SetQueueSize(GetCurrentFireMode());
+}
+
+void CWeaponMagazined::instance_runtime_apply(const SInstanceRuntime& rt)
+{
+	inherited::instance_runtime_apply(rt);
+	if (!rt.valid || rt.fire_mode >= m_aFireModes.size())
+		return;
+	m_iCurFireMode = rt.fire_mode;
+	// Same rule as OnH_A_Chield: the actor fires in the selected mode, NPCs choose their own bursts
+	if (m_bHasDifferentFireModes && smart_cast<CActor*>(H_Parent()))
+		SetQueueSize(GetCurrentFireMode());
 }

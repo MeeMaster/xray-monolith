@@ -49,12 +49,12 @@ void IGame_ObjectPool::clear()
 	m_PrefetchObjects.clear();
 }
 
-CObject* IGame_ObjectPool::create(LPCSTR name)
+CObject* IGame_ObjectPool::create(LPCSTR name, LPCSTR load_section)
 {
 	CLASS_ID CLS = pSettings->r_clsid(name, "class");
 	CObject* O = (CObject*)NEW_INSTANCE(CLS);
 	O->cNameSect_set(name);
-	O->Load(name);
+	O->Load(load_section ? load_section : name);
 	return O;
 }
 

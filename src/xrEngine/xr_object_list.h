@@ -55,7 +55,7 @@ public:
 	void Load();
 	void Unload();
 
-	CObject* Create(LPCSTR name);
+	CObject* Create(LPCSTR name, LPCSTR load_section = nullptr);
 	void Destroy(CObject* O);
 
 	void SingleUpdate(CObject* O);

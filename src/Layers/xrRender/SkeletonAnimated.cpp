@@ -11,6 +11,7 @@
 #include	"../../xrcore/dump_string.h"
 #endif
 extern int psSkeletonUpdate;
+extern int psSkeletonBindFallback;
 extern shared_str current_player_hud_sect;
 using namespace animation;
 //////////////////////////////////////////////////////////////////////////
@@ -1026,6 +1027,40 @@ void CKinematicsAnimated::BuildBoneMatrix(const CBoneData* bd, CBoneInstance& bi
 	//int				b_counts				[MAX_CHANNELS]	= {0,0,0,0}; //channel counts
 	SKeyTable keys;
 	LL_BuldBoneMatrixDequatize(bd, channel_mask, keys);
+
+	// Bind-pose fallback for bones with no motion on the main channel.
+	// Without it, channel 0 mixes to a zero key, the bone's local transform
+	// becomes the identity, and every child bone collapses onto its parent's
+	// origin (an animated weapon model with nothing playing comes apart).
+	// Rigid models already use the bind transform (CKinematics::BuildBoneMatrix).
+	if (psSkeletonBindFallback && keys.chanel_blend_conts[0] == 0)
+	{
+		bool other_channels = false;
+		for (u16 j = 1; j < MAX_CHANNELS; ++j)
+		{
+			if (keys.chanel_blend_conts[j])
+			{
+				other_channels = true;
+				break;
+			}
+		}
+
+		if (!other_channels)
+		{
+			// Nothing plays on this bone at all: exactly the rigid result
+			CKinematics::BuildBoneMatrix(bd, bi, parent, channel_mask);
+			return;
+		}
+
+		// Other channels (additive or lerp) play: mix them over the bind key
+		// instead of over the zero key. One key with no blend pointer is safe:
+		// MixInterlerp copies a single key without reading its blend.
+		CKey& bind_key = keys.keys[0][0];
+		bind_key.Q.set(bd->bind_transform);
+		bind_key.T.set(bd->bind_transform.c);
+		keys.blends[0][0] = nullptr;
+		keys.chanel_blend_conts[0] = 1;
+	}
 
 	LL_BoneMatrixBuild(bd->GetSelfID(), bi, parent, keys);
 

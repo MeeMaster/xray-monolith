@@ -20,6 +20,7 @@
 #include "Level.h"
 #include "WeaponMagazinedWGrenade.h"
 #include "string_table.h"
+#include "stat_mods.h"
 
 bool CInventoryItem::has_upgrade_group(const shared_str& upgrade_group_id)
 {
@@ -56,6 +57,13 @@ void CInventoryItem::add_upgrade(const shared_str& upgrade_id, bool loading)
 			CGameObject::u_EventGen(P, GE_INSTALL_UPGRADE, object_id());
 			P.w_stringZ(upgrade_id);
 			CGameObject::u_EventSend(P);
+
+			// 3d: the upgrade's stat_mods go into the generated section; rebuild it and, on a weapon, reload
+			if (stat_mods::upgrade_has_mods(upgrade_id.c_str()))
+			{
+				m_instance_section_stale = true;
+				on_instance_config_changed();
+			}
 		}
 	}
 }
@@ -164,6 +172,8 @@ bool CInventoryItem::verify_upgrade(LPCSTR section)
 bool CInventoryItem::install_upgrade_impl(LPCSTR section, bool test)
 {
 	bool result = process_if_exists(section, "cost", &CInifile::r_u32, m_cost, test);
+	// 3d: stat_mods are applied through the generated section, not here; an upgrade with only those is not empty
+	result |= !!pSettings->line_exist(section, "stat_mods");
 	result |= process_if_exists(section, "inv_weight", &CInifile::r_float, m_weight, test);
 	result |= install_upgrade_ui(section, test);
 

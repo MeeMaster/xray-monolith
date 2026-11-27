@@ -1,0 +1,171 @@
+-- Test for engine change 1a: bind-pose fallback (WEAPON_ENGINE_PLAN.md 7.2).
+-- Vanilla Anomaly + this engine build + tests\bind_pose (install.ps1).
+--
+--   run_string mw_bp.give()       spawn the test gun in your inventory
+--   run_string mw_bp.npc_give()   give it to the NPC under the crosshair and ask them to hold it
+--   run_string mw_bp.watch()      log the bolt and magazine offsets every 0.1 s for 8 s, for the same
+--                                 gun check() picks: start it, then reload or shoot (yours, or an NPC's)
+--
+-- Change 1g (WEAPON_ENGINE_PLAN.md 7.5): an NPC's shots play the gun's "shoot" motion on its world
+-- model (wpn_world_shot_motion_dist, default 50 m; 0 turns it off). npc_give() the test gun to an
+-- NPC, get them into a fight, aim at them and watch(): the bolt offset should move on each shot.
+--   run_string mw_bp.check()      measure the bolt and magazine on the gun under the crosshair,
+--                                 the gun an NPC under the crosshair holds, or the gun in your hands
+--
+-- Console: rs_skeleton_bind_fallback 1 (fix on, default) / 0 (old behaviour).
+-- With the fix on, check() should report both bones at their rest offsets.
+-- With it off, the world model's bolt and magazine collapse onto wpn_body.
+--
+-- Change 1b (WEAPON_ENGINE_PLAN.md 7.3): hud_shared_model 1 (default) draws the first-person
+-- gun from the world model instance instead of a second copy. It applies to guns spawned
+-- after the change, so give() a new gun after toggling it. With 1:
+--   - in third person (F1) the actor's gun plays the same bolt and magazine motions as in first person
+--   - reload, then holster or drop the gun: it goes back to the bind pose (check() reports IN PLACE)
+--   - pick it up again and fire: first person animates normally
+
+local SECTION = "mw_bp_ak74"
+
+-- Rest offsets from wpn_body in the model's bind data (WEAPON_MODELS.md 11)
+local REST = {
+	{ bone = "zatvor", name = "bolt", dist = 0.185 },
+	{ bone = "magazin", name = "magazine", dist = 0.142 },
+}
+
+local function say(text)
+	printf("[mw_bp] %s", text)
+	if actor_menu and actor_menu.set_msg then
+		actor_menu.set_msg(1, "mw_bp: " .. text, 6)
+	end
+end
+
+local function target()
+	local ok, obj = pcall(level.get_target_obj)
+	if ok then return obj end
+end
+
+function give()
+	if not ini_sys:section_exist(SECTION) then
+		say(SECTION .. " is not loaded; run tests\\bind_pose\\install.ps1 and restart")
+		return
+	end
+	alife_create_item(SECTION, db.actor)
+	say("gave " .. SECTION .. ". Check it in third person, dropped, and with npc_give(); then check()")
+end
+
+function npc_give()
+	local npc = target()
+	if not (npc and IsStalker(npc) and npc:alive()) then
+		say("aim at a living NPC first")
+		return
+	end
+	local se = alife_create_item(SECTION, npc)
+	if not se then
+		say("could not spawn " .. SECTION)
+		return
+	end
+	local npc_id, gun_id, tries = npc:id(), se.id, 0
+	CreateTimeEvent("mw_bp", "npc_give", 0.5, function()
+		tries = tries + 1
+		local npc_obj = level.object_by_id(npc_id)
+		local gun = level.object_by_id(gun_id)
+		if npc_obj and gun then
+			local active = npc_obj:active_item()
+			if active and active:id() == gun_id then
+				say(npc_obj:name() .. " holds the test gun. Aim at them and run check()")
+				return true
+			end
+			pcall(function() npc_obj:set_item(object.idle, gun) end)
+		end
+		if tries >= 20 then
+			say("the NPC did not take the gun into their hands; it is in their inventory")
+			return true
+		end
+		ResetTimeEvent("mw_bp", "npc_give", 0.5)
+		return false
+	end)
+	say("gave " .. SECTION .. " to " .. npc:name() .. "; waiting for them to hold it")
+end
+
+local function gun_to_check()
+	local obj = target()
+	if obj and IsWeapon(obj) then
+		return obj, "the gun under the crosshair"
+	end
+	if obj and IsStalker(obj) and obj:active_item() then
+		return obj:active_item(), "the gun " .. obj:name() .. " holds"
+	end
+	local held = db.actor and db.actor:active_item()
+	if held and IsWeapon(held) then
+		return held, "the gun in your hands (world model)"
+	end
+end
+
+function check()
+	local gun, where = gun_to_check()
+	if not gun then
+		say("aim at a gun or an NPC holding one, or hold one")
+		return
+	end
+
+	local ok, body = pcall(gun.bone_position, gun, "wpn_body")
+	if not (ok and body) then
+		say("could not read wpn_body on " .. gun:section())
+		return
+	end
+
+	local function cvar(name)
+		local ok, v = pcall(function() return get_console():get_integer(name) end)
+		return ok and tostring(v) or "?"
+	end
+
+	local lines, in_place = {}, true
+	for _, r in ipairs(REST) do
+		local okp, pos = pcall(gun.bone_position, gun, r.bone)
+		if okp and pos then
+			local d = pos:distance_to(body)
+			table.insert(lines, string.format("%s %.3f m (rest %.3f)", r.name, d, r.dist))
+			if math.abs(d - r.dist) > 0.02 then in_place = false end
+		else
+			table.insert(lines, r.name .. ": no bone " .. r.bone)
+			in_place = false
+		end
+	end
+
+	say(string.format("%s, %s: %s. %s. rs_skeleton_bind_fallback = %s, hud_shared_model = %s",
+		where, gun:section(), table.concat(lines, ", "),
+		in_place and "IN PLACE" or "NOT at rest offsets (collapsed or animated)",
+		cvar("rs_skeleton_bind_fallback"), cvar("hud_shared_model")))
+end
+
+-- Logs the held gun's bone offsets over time: numbers that change mean the world model is
+-- animated; numbers that stay at the rest offsets mean it is static
+function watch()
+	local held, where = gun_to_check()
+	if not held then
+		say("aim at a gun or an NPC holding one, or hold one")
+		return
+	end
+	local id, n = held:id(), 0
+	say("watching " .. where .. " (" .. held:section() .. ") for 8 s")
+	CreateTimeEvent("mw_bp", "watch", 0.1, function()
+		n = n + 1
+		local gun = level.object_by_id(id)
+		if not gun then return true end
+		local ok, body = pcall(gun.bone_position, gun, "wpn_body")
+		if ok and body then
+			local parts = {}
+			for _, r in ipairs(REST) do
+				local okp, pos = pcall(gun.bone_position, gun, r.bone)
+				table.insert(parts, string.format("%s %.3f", r.name, (okp and pos) and pos:distance_to(body) or -1))
+			end
+			-- Anomaly's printf only fills %s, so format first
+			printf("%s", string.format("[mw_bp] watch %02d: %s", n, table.concat(parts, ", ")))
+		end
+		if n >= 80 then
+			say("watch done; see the log")
+			return true
+		end
+		ResetTimeEvent("mw_bp", "watch", 0.1)
+		return false
+	end)
+end

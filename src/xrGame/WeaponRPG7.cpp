@@ -48,7 +48,11 @@ void CWeaponRPG7::UpdateMissileVisibility()
 	vis_hud = (!!iAmmoElapsed || GetState() == eReload);
 	vis_weap = !!iAmmoElapsed;
 
-	if (GetHUDmode())
+	// One shared model (WEAPON_ENGINE_PLAN.md 7.3): the rocket shows during reload in every view,
+	// since the reload is animated in every view
+	if (HudSharesWorldVisual())
+		vis_weap = vis_hud;
+	else if (GetHUDmode())
 	{
 		HudItemData()->set_bone_visible("grenade", vis_hud,TRUE);
 	}

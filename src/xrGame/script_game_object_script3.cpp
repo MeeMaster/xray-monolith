@@ -35,6 +35,7 @@
 #include "sight_manager_space.h"
 #include "script_attachment_manager.h"
 #include "WeaponBinoculars.h"
+#include "instance_record_script.h"
 
 using namespace luabind;
 
@@ -213,6 +214,30 @@ class_<CScriptGameObject> script_register_game_object2(class_<CScriptGameObject>
 
 		// demonized: list all bones
 		.def("list_bones", SAFE_WRAP(&CScriptGameObject::list_bones))
+
+		// WEAPON_ENGINE_PLAN.md 14 (2h): instance record of an inventory item
+		.def("instance_section", &instance_record_script::go_instance_section)
+		.def("get_override", &instance_record_script::go_get_override)
+		.def("set_override", &instance_record_script::go_set_override)
+		.def("set_override", &instance_record_script::go_set_override_reload)
+		.def("set_override", &instance_record_script::go_clear_override) // set_override(key) clears
+		.def("clear_override", &instance_record_script::go_clear_override)
+		.def("get_overrides", &instance_record_script::go_get_overrides, raw<1>())
+		.def("get_overrides", &instance_record_script::go_get_overrides_filter, raw<1>())
+		.def("is_state_override", &instance_record_script::go_is_state_override)
+		.def("record_counters", &instance_record_script::go_record_counters, raw<1>())
+		.def("get_parts", &instance_record_script::go_get_parts, raw<1>())
+		.def("record_add_part", &instance_record_script::go_add_part)
+		.def("record_add_part", &instance_record_script::go_add_part_pos)
+		.def("record_remove_part", &instance_record_script::go_remove_part)
+		.def("record_size", &instance_record_script::go_record_size)
+		.def("add_modifier", &instance_record_script::go_add_modifier)
+		.def("add_modifier", &instance_record_script::go_add_modifier_mode)
+		.def("remove_modifier", &instance_record_script::go_remove_modifier)
+		.def("remove_modifier", &instance_record_script::go_remove_modifier_key)
+		.def("get_modifiers", &instance_record_script::go_get_modifiers, raw<1>())
+		.def("get_modifiers", &instance_record_script::go_get_modifiers_key, raw<1>())
+		.def("explain_stat", &instance_record_script::go_explain_stat, raw<1>())
 
 #ifdef CBULLETMANAGER_EX
 		.def("GetBulletCheckVisual", SAFE_WRAP(&CScriptGameObject::GetBulletCheckVisual))

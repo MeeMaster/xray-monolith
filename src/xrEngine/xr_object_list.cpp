@@ -457,9 +457,9 @@ void CObjectList::Unload()
 	}
 }
 
-CObject* CObjectList::Create(LPCSTR name)
+CObject* CObjectList::Create(LPCSTR name, LPCSTR load_section)
 {
-	CObject* O = g_pGamePersistent->ObjectPool.create(name);
+	CObject* O = g_pGamePersistent->ObjectPool.create(name, load_section);
 	// Msg("CObjectList::Create [%x]%s", O, name);
 	objects_sleeping.push_back(O);
 	return O;

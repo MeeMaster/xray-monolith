@@ -1772,9 +1772,9 @@ bool AllowHudMotion()
 
 bool MotionExists(LPCSTR model_path, LPCSTR motion_name)
 {
-	::Render->hud_loading = true;
+	// No HUD flag: the model pool keys on the file name only, so a HUD-flagged probe would
+	// give every later world copy of this model the HUD shaders (WEAPON_MODELS.md 6)
 	IRenderVisual* vis = ::Render->model_Create(model_path);
-	::Render->hud_loading = false;
 	if (!vis) return false;
 	IKinematicsAnimated* ka = smart_cast<IKinematicsAnimated*>(vis);
 	bool found = ka && ka->ID_Cycle_Safe(motion_name).valid();

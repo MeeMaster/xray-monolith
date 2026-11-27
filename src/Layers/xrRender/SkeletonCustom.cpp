@@ -9,6 +9,7 @@
 #include	"../../xrEngine/Render.h"
 #endif
 int psSkeletonUpdate = 32;
+int psSkeletonBindFallback = 1; // animated bones with no motion use their bind pose (SkeletonAnimated.cpp)
 xrCriticalSection UCalc_Mutex
 #ifdef PROFILE_CRITICAL_SECTIONS
 	(MUTEX_PROFILE_ID(UCalc_Mutex))

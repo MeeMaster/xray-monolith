@@ -7,6 +7,7 @@
 #include "game_level_cross_table.h"
 #include "level_graph.h"
 #include "client_spawn_manager.h"
+#include "instance_section.h"
 #include "../xrEngine/xr_object.h"
 #include "../xrEngine/IGame_Persistent.h"
 
@@ -106,9 +107,14 @@ void CLevel::g_sv_Spawn(CSE_Abstract* E)
 	if (GameID() == eGameIDSingle) psNET_Flags.set(NETFLAG_MINIMIZEUPDATES,TRUE);
 	else psNET_Flags.set(NETFLAG_MINIMIZEUPDATES,FALSE);
 
+	// 2f (WEAPON_ENGINE_PLAN.md 5.2): an item's generated section has to exist before Objects.Create runs Load
+	shared_str load_section;
+	if (CSE_ALifeInventoryItem* item = E->cast_inventory_item())
+		load_section = instance_section::build(*E->s_name, E->ID, item->m_instance, &item->m_upgrades);
+
 	// Client spawn
 	//	T.Start		();
-	CObject* O = Objects.Create(*E->s_name);
+	CObject* O = Objects.Create(*E->s_name, load_section.size() ? load_section.c_str() : nullptr); // 2g: Load reads the generated section
 	// Msg				("--spawn--CREATE: %f ms",1000.f*T.GetAsync());
 
 	//	T.Start		();

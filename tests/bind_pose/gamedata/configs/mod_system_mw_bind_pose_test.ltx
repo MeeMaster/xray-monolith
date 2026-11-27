@@ -1,0 +1,31 @@
+; Test gun for engine change 1a (bind-pose fallback, WEAPON_ENGINE_PLAN.md 7.2).
+; Built on vanilla Anomaly's AK-74 so it needs no GAMMA mods.
+; Its only model is Part_bench's wpn_ak74_n_one.ogf: an animated model (type 3)
+; with child bones (zatvor = bolt, magazin = magazine), used as both the world
+; model and the first-person model. Without the fix its child bones collapse
+; onto wpn_body in the world view.
+; The first-person view uses vanilla AK-74 hand animations, which don't match
+; this model, so the gun may sit slightly off in the hands. That is expected:
+; the test is about the world view.
+
+[mw_bp_ak74]:wpn_ak74
+parent_section     = mw_bp_ak74
+inv_name           = mw_bp_ak74_name
+inv_name_short     = mw_bp_ak74_name
+description        = mw_bp_ak74_descr
+hud                = mw_bp_ak74_hud
+visual             = mw\wpn_ak74_n_one.ogf
+; World placement of the BaS AK-74N world mesh this model comes from
+position           = -0.026, 0.0, 0.0
+orientation        = 0, 0, 0
+fire_point         = 0, 0.0, 0.656
+fire_point2        = 0, 0.161, 0.583
+
+[mw_bp_ak74_hud]:wpn_ak74_hud
+item_visual        = mw\wpn_ak74_n_one.ogf
+; Vanilla aliases name only the hand motion, so the gun would look for an item
+; motion with that same name (ak_74_reload1), which the BaS motion file doesn't
+; have, and fall back to idle. The second field names the gun's own motion.
+; Hand and gun motions come from different packs, so their timing won't match.
+anm_reload         = ak_74_reload1, reload
+anm_shots          = ak_74_shoot, shoot

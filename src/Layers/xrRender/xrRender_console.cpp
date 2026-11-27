@@ -116,6 +116,7 @@ xr_token screenshot_mode_token [ ] = {
 
 // Common
 extern int psSkeletonUpdate;
+extern int psSkeletonBindFallback;
 extern float r__dtex_range;
 
 Flags32 ps_r__common_flags = {/*RFLAG_NO_RAM_TEXTURES*/ }; // All renders
@@ -1298,6 +1299,7 @@ void xrRender_initconsole()
 	CMD3(CCC_Preset, "_preset", &ps_Preset, qpreset_token);
 
 	CMD4(CCC_Integer, "rs_skeleton_update", &psSkeletonUpdate, 2, 128);
+	CMD4(CCC_Integer, "rs_skeleton_bind_fallback", &psSkeletonBindFallback, 0, 1);
 #ifdef	DEBUG
 	CMD1(CCC_DumpResources,		"dump_resources");
 #endif	//	 DEBUG

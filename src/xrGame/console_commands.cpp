@@ -1,4 +1,7 @@
 #include "pch_script.h"
+#include "InstanceRecord.h"
+#include "Weapon.h"
+#include "WeaponMagazinedWGrenade.h"
 #include "../xrEngine/xr_ioconsole.h"
 #include "../xrEngine/xr_ioc_cmd.h"
 #include "../xrEngine/customhud.h"
@@ -175,6 +178,9 @@ extern BOOL g_aimmode_remember;
 extern BOOL g_freelook_while_reloading;
 extern BOOL useSeparateUBGLKeybind;
 extern int ps_hud_ik_compensation;
+extern int ps_hud_shared_model;
+extern float ps_wpn_world_shot_motion_dist;
+extern int ps_wpn_world_shot_motion_debug;
 extern int g_nearwall;
 extern int g_nearwall_trace;
 extern BOOL drawPickupItemNames;
@@ -412,6 +418,72 @@ static void full_memory_stats()
 	dump_file_mappings();
 #endif // DEBUG
 }
+
+// Checks the dynamic config sections (WEAPON_ENGINE_PLAN.md 5.1, change 2e) against a loaded weapon section
+class CCC_IniDynamicTest : public IConsole_Command
+{
+public:
+	CCC_IniDynamicTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		u32 failed = 0;
+		auto check = [&](bool ok, LPCSTR what)
+		{
+			Msg("%s [ini dynamic test] %s", ok ? "-" : "!", what);
+			if (!ok) ++failed;
+		};
+		LPCSTR base = (args && *args) ? args : "wpn_ak74";
+		if (!pSettings->section_exist(base))
+		{
+			Msg("! [ini dynamic test] base section [%s] is not loaded", base);
+			return;
+		}
+		const LPCSTR name = "ini_dynamic_test_i4000000";
+		const u32 count_before = pSettings->dynamic_section_count();
+
+		CInifile::DynamicItems items;
+		items.push_back({ "rpm", "123" });
+		items.push_back({ "ini_dynamic_test_new_key", "hello" });
+		check(pSettings->add_dynamic_section(name, base, items), "section built from the base");
+		check(pSettings->section_exist(name) && pSettings->dynamic_section_exist(name), "section_exist finds it");
+		check(pSettings->r_float(name, "rpm") == 123.f, "override replaces a base key");
+		check(!xr_strcmp(pSettings->r_string(name, "ini_dynamic_test_new_key"), "hello"), "override adds a key");
+		check(pSettings->line_exist(name, "ini_dynamic_test_new_key"), "line_exist sees the added key");
+		check(!xr_strcmp(pSettings->r_string(name, "inv_name"), pSettings->r_string(base, "inv_name")), "other keys come from the base");
+		check(pSettings->line_count(name) == pSettings->line_count(base) + 1, "line count is the base's plus the added key");
+		check(pSettings->r_float(base, "rpm") != 123.f || items.empty(), "the base section is unchanged");
+
+		CInifile::DynamicItems items2;
+		items2.push_back({ "rpm", "456" });
+		check(pSettings->add_dynamic_section(name, base, items2) && pSettings->r_float(name, "rpm") == 456.f, "rebuilding replaces the section");
+		check(!pSettings->line_exist(name, "ini_dynamic_test_new_key"), "the rebuilt section drops keys it no longer has");
+
+		check(!pSettings->add_dynamic_section("ini_dynamic_test", base, items), "a name without _i<digits> is refused");
+		check(!pSettings->add_dynamic_section("ini_dynamic_test_i4000001", "no_such_section_xyz", items), "a missing base is refused");
+		check(!pSettings->section_exist("ini_dynamic_test_i4000002"), "an unknown dynamic name does not exist");
+
+		check(pSettings->remove_dynamic_section(name) && !pSettings->section_exist(name), "removing it hides it");
+		check(pSettings->dynamic_section_count() == count_before, "dynamic section count is back where it was");
+
+		// Miss-path cost: section_exist on names that are not loaded
+		CTimer t;
+		t.Start();
+		u32 found = 0;
+		for (u32 i = 0; i < 100000; ++i)
+			found += pSettings->section_exist((i & 1) ? "no_such_section_xyz" : "no_such_section_i12") ? 1 : 0;
+		Msg("- [ini dynamic test] 100000 missed lookups: %.2f ms (%u found)", t.GetElapsed_sec() * 1000.f, found);
+
+		Msg("%s [ini dynamic test] %s", failed ? "!" : "-", failed ? "FAILED" : "all checks passed");
+	}
+};
+
+// Round trip and robustness checks for the per-item record (WEAPON_ENGINE_PLAN.md 4.1, 2a)
+class CCC_InstanceRecordTest : public IConsole_Command
+{
+public:
+	CCC_InstanceRecordTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args) { CSE_InstanceRecord::self_test(); }
+};
 
 class CCC_MemStats : public IConsole_Command
 {
@@ -2529,6 +2601,302 @@ public:
     }
 };
 
+// Debug access to the instance record (WEAPON_ENGINE_PLAN.md 4.1-4.3, changes 2a-2c) of the actor's active
+// item. instance_record_set edits the game-side copy and sends it to the server (GE_INSTANCE_RECORD);
+// instance_record_dump shows both copies and whether they match.
+#include "alife_object_registry.h"
+#include "../xrServerEntities/xrServer_Objects_ALife_Items.h"
+
+static PIItem active_item()
+{
+	if (!g_pGameLevel || !Actor() || !ai().get_alife())
+	{
+		Msg("! [instance record] needs a loaded single player game");
+		return nullptr;
+	}
+	PIItem item = Actor()->inventory().ActiveItem();
+	if (!item)
+		Msg("! [instance record] no item in hands");
+	return item;
+}
+
+static CSE_ALifeInventoryItem* server_entity(PIItem item)
+{
+	CSE_ALifeDynamicObject* se = ai().alife().objects().object(item->object().ID(), true);
+	return se ? smart_cast<CSE_ALifeInventoryItem*>(se) : nullptr;
+}
+
+static void dump_record(LPCSTR side, const CSE_InstanceRecord& r)
+{
+	Msg("- [instance record] %s: %u bytes, %u overrides, %u parts, next part id %u%s%s", side, r.byte_size(),
+		u32(r.overrides.size()), u32(r.parts.size()), u32(r.next_part_id), r.runtime.valid ? ", runtime state" : "",
+		r.is_opaque() ? ", from a newer build (read-only)" : "");
+	for (const SInstanceProp& p : r.overrides)
+		Msg("-   override %s = %s", p.key.c_str(), p.value.c_str() ? p.value.c_str() : "");
+	for (const SInstancePart& p : r.parts)
+		Msg("-   part %u on %u/%s at %.3f: %s", u32(p.id), u32(p.parent), p.mount.c_str(), p.pos,
+			p.section.size() ? p.section.c_str() : "(emptied)");
+	if (r.runtime.valid)
+	{
+		string512 rounds = "";
+		for (u32 i = 0; i < r.runtime.rounds.size() && i < 120; ++i)
+		{
+			string16 t;
+			xr_sprintf(t, "%u", u32(r.runtime.rounds[i]));
+			xr_strcat(rounds, t);
+		}
+		Msg("-   runtime: fire mode %u, launcher mode %u, %u rounds by ammo type, first loaded first: %s",
+			u32(r.runtime.fire_mode), u32(r.runtime.gl_mode), u32(r.runtime.rounds.size()), rounds);
+	}
+}
+
+class CCC_InstanceRecordDump : public IConsole_Command
+{
+public:
+	CCC_InstanceRecordDump(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		PIItem item = active_item();
+		if (!item)
+			return;
+		Msg("- [instance record] %s [%u]", item->object().cName().c_str(), item->object().ID());
+		dump_record("game side", item->instance_record());
+		const shared_str sect = item->instance_section();
+		Msg("- [instance record] config section [%s] (%s)", sect.c_str(), item->has_instance_section() ? "generated" : "base");
+		if (item->has_instance_section())
+			for (const SInstanceProp& p : item->instance_record().overrides)
+				Msg("-   [%s] %s = %s", sect.c_str(), p.key.c_str(),
+					pSettings->line_exist(sect, p.key) ? pSettings->r_string(sect, p.key.c_str()) : "(missing)");
+		CSE_ALifeInventoryItem* se = server_entity(item);
+		if (!se)
+		{
+			Msg("! [instance record] no server entity");
+			return;
+		}
+		dump_record("server side", se->m_instance);
+		Msg("%s [instance record] the two copies %s", se->m_instance == item->instance_record() ? "-" : "!",
+			se->m_instance == item->instance_record() ? "match" : "DIFFER");
+	}
+};
+
+// instance_record_set <key> [value]: sets an override on the active item; no value clears it
+class CCC_InstanceRecordSet : public IConsole_Command
+{
+public:
+	CCC_InstanceRecordSet(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = FALSE; };
+	virtual void Execute(LPCSTR args)
+	{
+		string256 key = "", value = "";
+		if (sscanf(args, "%255s %255[^\n]", key, value) < 1)
+		{
+			Msg("! [instance record] usage: instance_record_set <key> [value]");
+			return;
+		}
+		PIItem item = active_item();
+		if (!item)
+			return;
+		CSE_InstanceRecord r = item->instance_record();
+		const bool ok = (*value ? r.set_override(key, value) : r.clear_override(key)) && item->set_instance_record(r);
+		Msg("%s [instance record] %s %s on %s [%u]; run instance_record_dump to compare both copies", ok ? "-" : "!",
+			*value ? "set" : "cleared", key, item->object().cName().c_str(), item->object().ID());
+	}
+};
+
+// Changes 3a/3b (WEAPON_ENGINE_PLAN.md 6): test commands for RerunLoad on the weapon in hands.
+static CWeapon* rebuild_test_weapon(LPCSTR cmd)
+{
+	PIItem item = active_item();
+	CWeapon* wpn = item ? smart_cast<CWeapon*>(item) : nullptr;
+	if (!wpn)
+		Msg("! [%s] take a weapon in your hands first", cmd);
+	return wpn;
+}
+
+// Rounds as runs in magazine order (the last run fires first): "ammo_a x20, ammo_b x5"
+static void rebuild_test_rounds(xr_string& out, const xr_vector<shared_str>& rounds)
+{
+	for (u32 i = 0; i < rounds.size();)
+	{
+		u32 j = i;
+		while (j < rounds.size() && rounds[j] == rounds[i])
+			++j;
+		string128 buf;
+		xr_sprintf(buf, "%s%s x%u", i ? ", " : "", rounds[i].c_str(), j - i);
+		out += buf;
+		i = j;
+	}
+}
+
+static void rebuild_test_state(xr_string& out, const CWeapon* wpn)
+{
+	SWeaponRuntimeSnapshot s;
+	wpn->runtime_snapshot(s);
+	string256 buf;
+	xr_sprintf(buf, "rounds %u [", u32(s.rounds.size()));
+	out = buf;
+	rebuild_test_rounds(out, s.rounds);
+	xr_sprintf(buf, "] ammo %s next %s grenades %u [", s.ammo_type.size() ? s.ammo_type.c_str() : "-",
+		s.next_ammo_type.size() ? s.next_ammo_type.c_str() : "-", u32(s.grenades.size()));
+	out += buf;
+	rebuild_test_rounds(out, s.grenades);
+	xr_sprintf(buf, "] grenade %s fire_mode %s%d gl %d scope %u cond %.3f addons 0x%02x", s.grenade_type.size() ? s.grenade_type.c_str() : "-",
+		s.has_fire_mode ? "" : "none/", s.fire_mode, int(s.gl_mode), u32(s.cur_scope), s.condition, u32(s.addon_flags));
+	out += buf;
+	xr_sprintf(buf, " [%s|%s|%s]", s.scope_name.size() ? s.scope_name.c_str() : "-",
+		s.silencer_name.size() ? s.silencer_name.c_str() : "-", s.launcher_name.size() ? s.launcher_name.c_str() : "-");
+	out += buf;
+}
+
+// reload_load_test [times]: runs Load again on the same config the given number of times (default 5) and checks
+// that nothing doubled, leaked or changed, and that the rounds, their types, the fire mode and launcher mode came
+// through. Works in launcher mode since 3b.
+class CCC_ReloadLoadTest : public IConsole_Command
+{
+public:
+	CCC_ReloadLoadTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		CWeapon* wpn = rebuild_test_weapon("reload_load_test");
+		if (!wpn)
+			return;
+		int times = 5;
+		if (args && *args)
+			sscanf(args, "%d", &times);
+		clamp(times, 1, 1000);
+
+		xr_string before, after, state_before, state_after;
+		wpn->LoadSignature(before);
+		rebuild_test_state(state_before, wpn);
+		const BOOL visible_before = wpn->getVisible();
+
+		CTimer timer;
+		timer.Start();
+		u32 fails = 0, unloads = 0;
+		for (int i = 0; i < times; ++i)
+		{
+			SWeaponRestoreReport r;
+			wpn->RerunLoad(&r);
+			wpn->LoadSignature(after);
+			if (after != before)
+			{
+				if (!fails)
+					Msg("! [reload_load_test] run %d changed the result:\n!   before %s\n!   after  %s", i + 1,
+						before.c_str(), after.c_str());
+				++fails;
+			}
+			if (r.rounds_unloaded || r.grenades_unloaded || r.addons_removed.size() || !r.gl_mode_kept)
+			{
+				if (!unloads)
+					Msg("! [reload_load_test] run %d unloaded [%s], removed addons [%s], launcher mode %s", i + 1,
+						r.unloaded.c_str(), r.addons_removed.c_str(), r.gl_mode_kept ? "kept" : "lost");
+				++unloads;
+			}
+		}
+		const float ms = timer.GetElapsed_sec() * 1000.f;
+		rebuild_test_state(state_after, wpn);
+
+		Msg("- [reload_load_test] %s [%u] from [%s]", wpn->cName().c_str(), wpn->ID(), wpn->config_section().c_str());
+		Msg("-   %s", before.c_str());
+		Msg("%s [reload_load_test] %d runs, %u changed the result, %u unloaded rounds", (fails || unloads) ? "!" : "-",
+			times, fails, unloads);
+		if (state_before == state_after)
+			Msg("- [reload_load_test] state kept: %s", state_after.c_str());
+		else
+			Msg("! [reload_load_test] state CHANGED:\n!   before %s\n!   after  %s", state_before.c_str(), state_after.c_str());
+		Msg("%s [reload_load_test] visibility %d -> %d; %.3f ms per run", wpn->getVisible() == visible_before ? "-" : "!",
+			int(visible_before), int(wpn->getVisible()), ms / float(times));
+	}
+};
+
+// rebuild_test: change 3b. Runs Load once from the weapon's current config section (set overrides first, e.g.
+// ammo_mag_size or ammo_class) and prints what was kept, what changed and what went to the inventory.
+class CCC_RebuildTest : public IConsole_Command
+{
+public:
+	CCC_RebuildTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		CWeapon* wpn = rebuild_test_weapon("rebuild_test");
+		if (!wpn)
+			return;
+		xr_string sig_before, sig_after, state_before, state_after;
+		wpn->LoadSignature(sig_before);
+		rebuild_test_state(state_before, wpn);
+
+		SWeaponRestoreReport r;
+		wpn->RerunLoad(&r);
+
+		wpn->LoadSignature(sig_after);
+		rebuild_test_state(state_after, wpn);
+		Msg("- [rebuild_test] %s [%u] from [%s]", wpn->cName().c_str(), wpn->ID(), wpn->config_section().c_str());
+		Msg("-   config before %s", sig_before.c_str());
+		Msg("-   config after  %s", sig_after.c_str());
+		Msg("-   state before  %s", state_before.c_str());
+		Msg("-   state after   %s", state_after.c_str());
+		Msg("- [rebuild_test] unloaded %u rounds, %u grenades%s%s; ammo type %s, fire mode %s, launcher mode %s",
+			r.rounds_unloaded, r.grenades_unloaded, r.unloaded.size() ? ": " : "", r.unloaded.c_str(),
+			r.ammo_type_kept ? "kept" : "reset", r.fire_mode_kept ? "kept" : "reset", r.gl_mode_kept ? "kept" : "lost");
+		Msg("%s [rebuild_test] addons removed [%s], missing ammo sections dropped [%s]",
+			(r.addons_removed.size() || r.ammo_dropped.size()) ? "!" : "-", r.addons_removed.c_str(), r.ammo_dropped.c_str());
+	}
+};
+
+class CCC_UpgradeFixTest : public IConsole_Command
+{
+public:
+	CCC_UpgradeFixTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		if (CWeapon* wpn = rebuild_test_weapon("upgrade_fix_test"))
+			wpn->upgrade_fix_self_test();
+	}
+};
+
+// stat_explain <key> (WEAPON_ENGINE_PLAN.md 6.3, change 3d): the base value of a key on the item in hands, each
+// stacked modifier with its source, and the final value. Also checks it against what Load reads.
+#include "stat_mods.h"
+class CCC_StatExplain : public IConsole_Command
+{
+public:
+	CCC_StatExplain(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		string256 key;
+		key[0] = 0;
+		if (args)
+			sscanf(args, "%255s", key);
+		if (!key[0])
+		{
+			Msg("! [stat_explain] usage: stat_explain <key>");
+			return;
+		}
+		PIItem item = active_item();
+		if (!item)
+		{
+			Msg("! [stat_explain] take an item in your hands first");
+			return;
+		}
+		stat_mods::SExplain e;
+		CInventoryItem::Upgrades_type upgrades = item->get_upgrades();
+		LPCSTR base = item->object().cNameSect().c_str();
+		stat_mods::explain(base, item->instance_record(), &upgrades, key, e);
+		Msg("* [stat_explain] %s [%u] %s: base %s%s", base, item->object_id(), key, e.base.size() ? e.base.c_str() : "(none)",
+			e.base_is_default ? " (limits default)" : "");
+		for (const stat_mods::SContribution& c : e.sources)
+			Msg("*   %-24s %s %+g", c.source.c_str(), c.mode == SInstanceModifier::PCT ? "pct " : "flat", c.value);
+		if (!e.sources.empty())
+			Msg("*   flat %+g, pct %+g%s, %s", e.flat, e.pct,
+				e.pct_used != e.pct ? make_string(" (floored to %+g)", e.pct_used).c_str() : "",
+				e.clamped ? "clamped" : "not clamped");
+		if (e.error.size())
+			Msg("!   skipped: %s", e.error.c_str());
+		const shared_str sect = item->config_section();
+		LPCSTR read = pSettings->line_exist(sect, key) ? pSettings->r_string(sect, key) : nullptr;
+		Msg("*   final %s; [%s] holds %s%s", e.final_value.size() ? e.final_value.c_str() : "(none)", sect.c_str(),
+			read ? read : "(none)", (read && e.final_value == read) || (!read && e.final_value.empty()) ? "" : "  <- MISMATCH");
+	}
+};
+
 void CCC_RegisterCommands()
 {
 	//Not needed for a singleplayer-only mod
@@ -2586,6 +2954,17 @@ void CCC_RegisterCommands()
 	CMD3(CCC_Mask, "hud_info", &psHUD_Flags, HUD_INFO);
 	CMD3(CCC_Mask, "hud_draw", &psHUD_Flags, HUD_DRAW);
 	CMD4(CCC_Integer, "hud_ik_compensation", &ps_hud_ik_compensation, 0, 1);
+	CMD4(CCC_Integer, "hud_shared_model", &ps_hud_shared_model, 0, 1);
+	CMD1(CCC_InstanceRecordTest, "instance_record_test");
+	CMD1(CCC_IniDynamicTest, "ini_dynamic_test");
+	CMD1(CCC_InstanceRecordDump, "instance_record_dump");
+	CMD1(CCC_InstanceRecordSet, "instance_record_set");
+	CMD1(CCC_ReloadLoadTest, "reload_load_test");
+	CMD1(CCC_RebuildTest, "rebuild_test");
+	CMD1(CCC_StatExplain, "stat_explain");
+	CMD1(CCC_UpgradeFixTest, "upgrade_fix_test");
+	CMD4(CCC_Float, "wpn_world_shot_motion_dist", &ps_wpn_world_shot_motion_dist, 0.f, 500.f);
+	CMD4(CCC_Integer, "wpn_world_shot_motion_debug", &ps_wpn_world_shot_motion_debug, 0, 1);
 
 	// hud
 	psHUD_Flags.set(HUD_CROSSHAIR, true);

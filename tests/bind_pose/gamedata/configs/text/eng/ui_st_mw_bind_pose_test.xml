@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<string_table>
+	<string id="mw_bp_ak74_name">
+		<text>AK-74N (bind-pose test)</text>
+	</string>
+	<string id="mw_bp_ak74_descr">
+		<text>Test gun for the bind-pose fallback. One animated model for first and third person. In third person, on the ground and in an NPC's hands, the bolt and magazine should sit in place.</text>
+	</string>
+</string_table>

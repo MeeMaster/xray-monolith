@@ -9,6 +9,7 @@
 #include "pch_script.h"
 #include "xrServer_Objects_ALife_Items.h"
 #include "xrServer_script_macroses.h"
+#include "../xrGame/instance_record_script.h"
 
 void add_upgrade_script(CSE_ALifeInventoryItem* ta, LPCSTR str)
 {
@@ -49,6 +50,27 @@ void CSE_ALifeInventoryItem::script_register(lua_State* L)
 		.def("has_upgrade", &has_upgrade)
 		.def("add_upgrade", &add_upgrade)
 		.property("condition", &get_condition_script, &set_condition_script)
+		// WEAPON_ENGINE_PLAN.md 14 (2h): the instance record; edits go through the game object while there is one
+		.def("get_override", &instance_record_script::se_get_override)
+		.def("set_override", &instance_record_script::se_set_override)
+		.def("set_override", &instance_record_script::se_set_override_reload)
+		.def("set_override", &instance_record_script::se_clear_override) // set_override(key) clears
+		.def("clear_override", &instance_record_script::se_clear_override)
+		.def("get_overrides", &instance_record_script::se_get_overrides, raw<1>())
+		.def("get_overrides", &instance_record_script::se_get_overrides_filter, raw<1>())
+		.def("is_state_override", &instance_record_script::se_is_state_override)
+		.def("get_parts", &instance_record_script::se_get_parts, raw<1>())
+		.def("record_add_part", &instance_record_script::se_add_part)
+		.def("record_add_part", &instance_record_script::se_add_part_pos)
+		.def("record_remove_part", &instance_record_script::se_remove_part)
+		.def("record_size", &instance_record_script::se_record_size)
+		.def("add_modifier", &instance_record_script::se_add_modifier)
+		.def("add_modifier", &instance_record_script::se_add_modifier_mode)
+		.def("remove_modifier", &instance_record_script::se_remove_modifier)
+		.def("remove_modifier", &instance_record_script::se_remove_modifier_key)
+		.def("get_modifiers", &instance_record_script::se_get_modifiers, raw<1>())
+		.def("get_modifiers", &instance_record_script::se_get_modifiers_key, raw<1>())
+		.def("explain_stat", &instance_record_script::se_explain_stat, raw<1>())
 	];
 }
 

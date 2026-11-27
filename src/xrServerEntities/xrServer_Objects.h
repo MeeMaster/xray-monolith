@@ -162,8 +162,10 @@
 //       CSE_ALifeTraderAbstract		added property m_deadbody_can_take, m_deadbody_closed
 // 127	 CSE_ALifeObjectClimable		added material;
 // 128	 CSE_ALifeObjectClimable		added can_fire in smart covers;
+// 129	 CSE_ALifeInventoryItem		instance record (CSE_InstanceRecord) after the state, inside its size frame
+//									(WEAPON_ENGINE_PLAN.md 4.2); STATE_Write/STATE_Read and the script packets are unchanged
 //------------------------------------------------------------------------------
-#define SPAWN_VERSION	u16(128)
+#define SPAWN_VERSION	u16(129)
 
 SERVER_ENTITY_DECLARE_BEGIN2(CSE_Shape, ISE_Shape, CShapeData)
 public:

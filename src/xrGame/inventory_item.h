@@ -312,6 +312,57 @@ public:
 	virtual CWeaponAmmo* cast_weapon_ammo() { return 0; }
 	virtual CGameObject* cast_game_object() { return 0; }
 
+	////////// instance record //////////////////////////////////////////////
+	// Game-side copy of the server entity's record (WEAPON_ENGINE_PLAN.md 4.3, change 2c). Filled from the
+	// server entity in net_Spawn; every change goes to the server as a whole record (GE_INSTANCE_RECORD).
+protected:
+	CSE_InstanceRecord m_instance;
+	// Generated config section ([<base>_i<id>], 2f) while the record needs one; empty otherwise
+	mutable shared_str m_instance_section;
+	// 3c (WEAPON_ENGINE_PLAN.md 6.2): config overrides changed; the section is rebuilt on its next read, so
+	// several changes in a row build it once
+	mutable bool m_instance_section_stale = false;
+	// 3c: a state value changed and the server copy is behind; sent from UpdateCL at most every 0.5 s, and
+	// always from save and net_Destroy
+	bool m_instance_unsent = false;
+	u32 m_instance_flush_time = 0;
+
+	void refresh_instance_section() const;
+	// Sends the record to the server copy. direct writes it straight into the server entity when the
+	// simulator holds it (save, net_Destroy); otherwise it goes as a GE_INSTANCE_RECORD event.
+	void send_instance_record(bool direct);
+	// After a change to the config overrides. Weapons queue a ReloadConfig; other items read the new section
+	// on their next spawn.
+	virtual void on_instance_config_changed() {}
+
+public:
+	const CSE_InstanceRecord& instance_record() const { return m_instance; }
+	// The item's generated section, or its base section when it has none (WEAPON_ENGINE_PLAN.md 5.3)
+	shared_str instance_section() const;
+	bool has_instance_section() const
+	{
+		if (m_instance_section_stale)
+			refresh_instance_section();
+		return !!m_instance_section.size();
+	}
+	// Section to read config values from: the generated one, else the base. Identity reads keep cNameSect().
+	const shared_str& config_section() const
+	{
+		if (m_instance_section_stale)
+			refresh_instance_section();
+		return m_instance_section.size() ? m_instance_section : m_section_id;
+	}
+	// Replaces the record here and on the server. False for a record from a newer build, which is read-only.
+	// A change to the config overrides is sent at once and rebuilds the section; any other change is sent at
+	// once too, unless defer_send is set (state values, 3c), which only marks it for the next flush.
+	bool set_instance_record(const CSE_InstanceRecord& record, bool defer_send = false);
+	// Sends a deferred change now, if there is one
+	void flush_instance_record(bool direct = false);
+
+	// Test counters (mw_ir.api, 3c): records sent to the server copy, generated sections built at runtime
+	static u32 s_instance_sends;
+	static u32 s_instance_builds;
+
 	////////// upgrades //////////////////////////////////////////////////
 public:
 	typedef xr_vector<shared_str> Upgrades_type;

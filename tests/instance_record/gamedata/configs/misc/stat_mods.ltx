@@ -1,0 +1,8 @@
+; Stacked modifier limits (WEAPON_ENGINE_PLAN.md 6.3, change 3d).
+; One line per key: <key> = <min>, <max> [, <default>]. The default is the base value when an item's
+; section lacks the key. pct_floor is the lowest the summed percentage can go (-0.9: at most -90%).
+[stat_mod_limits]
+pct_floor                = -0.9
+rpm                      = 30, 3000
+burn_protection          = 0, 1
+mw_sm_default            = 0, 100, 5   ; test key (mw_ir.mods)
