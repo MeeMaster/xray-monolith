@@ -40,6 +40,8 @@ namespace instance_record_script
 	// 4a: part props; bone, offset and hides are checked and normalised (weapon_parts.h)
 	LPCSTR go_get_part_prop(CScriptGameObject* self, u16 id, LPCSTR key);
 	bool go_set_part_prop(CScriptGameObject* self, u16 id, LPCSTR key, const ::luabind::object& value);
+	// 4b: the weapon's drawn part tree: {{id, parent, section, model, bone, drawn, reason}, ...}
+	::luabind::object go_get_part_tree(lua_State* L, CScriptGameObject* self);
 
 	// Methods of cse_alife_inventory_item. While the item has a game object, edits are
 	// forwarded to it; otherwise they change the server copy, which the next spawn reads.

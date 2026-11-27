@@ -229,6 +229,8 @@ public:
 	virtual void render_hud_mode()
 	{
 	};
+	// 4b: parts the item draws on its HUD model (CWeapon)
+	virtual void render_hud_parts(IKinematics* model, const Fmatrix& xform) {}
 	virtual bool need_renderable() { return true; };
 
 	virtual void render_item_3d_ui();

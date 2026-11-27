@@ -366,7 +366,10 @@ bool CInventoryItem::set_instance_record(const CSE_InstanceRecord& record, bool 
 		return false;
 	}
 	const bool config_changed = !m_instance.same_config(record);
+	const bool parts_changed = !(m_instance.parts == record.parts);
 	m_instance = record;
+	if (parts_changed)
+		on_instance_parts_changed();
 	if (config_changed)
 	{
 		// 2f/3c: rebuilt on the next config read, so several changes in one frame build it once

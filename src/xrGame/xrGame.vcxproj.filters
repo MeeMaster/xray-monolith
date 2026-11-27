@@ -5649,6 +5649,9 @@
     <ClInclude Include="weapon_parts.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
+    <ClInclude Include="weapon_part_tree.h">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClInclude>
     <ClInclude Include="instance_record_script.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
@@ -9283,6 +9286,9 @@
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClCompile>
     <ClCompile Include="weapon_parts.cpp">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClCompile>
+    <ClCompile Include="weapon_part_tree.cpp">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClCompile>
     <ClCompile Include="instance_record_script.cpp">

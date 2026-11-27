@@ -15,6 +15,8 @@
 #include "script_engine.h"
 #include "stat_mods.h"
 #include "weapon_parts.h"
+#include "weapon_part_tree.h"
+#include "Weapon.h"
 
 namespace
 {
@@ -505,6 +507,32 @@ namespace instance_record_script
 	{
 		CInventoryItem* item = game_item(self);
 		return item && edit_game(item, [&](CSE_InstanceRecord& r) { return set_part_prop(r, id, key, value); });
+	}
+
+	::luabind::object go_get_part_tree(lua_State* L, CScriptGameObject* self)
+	{
+		::luabind::object t = ::luabind::newtable(L);
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		if (!w)
+			return t;
+		w->parts_update();
+		const CWeaponPartTree* tree = w->part_tree();
+		if (!tree)
+			return t;
+		int i = 1;
+		for (const CWeaponPartTree::SNode& n : tree->nodes())
+		{
+			::luabind::object node = ::luabind::newtable(L);
+			node["id"] = n.id;
+			node["parent"] = n.parent;
+			node["section"] = n.section.size() ? n.section.c_str() : "";
+			node["model"] = n.model.size() ? n.model.c_str() : "";
+			node["bone"] = n.bone.size() ? n.bone.c_str() : "";
+			node["drawn"] = n.att != nullptr;
+			node["reason"] = n.reason.c_str();
+			t[i++] = node;
+		}
+		return t;
 	}
 
 	// ---- server item ----------------------------------------------------

@@ -14,6 +14,7 @@ namespace weapon_parts
 	LPCSTR const PROP_BONE = "bone";
 	LPCSTR const PROP_OFFSET = "offset";
 	LPCSTR const PROP_HIDES = "hides";
+	LPCSTR const PROP_VISUAL = "visual";
 }
 
 namespace
@@ -75,7 +76,8 @@ namespace weapon_parts
 {
 	bool is_placement_prop(LPCSTR key)
 	{
-		return key && (!xr_strcmp(key, PROP_BONE) || !xr_strcmp(key, PROP_OFFSET) || !xr_strcmp(key, PROP_HIDES));
+		return key && (!xr_strcmp(key, PROP_BONE) || !xr_strcmp(key, PROP_OFFSET) || !xr_strcmp(key, PROP_HIDES) ||
+			!xr_strcmp(key, PROP_VISUAL));
 	}
 
 	bool normalise_prop(LPCSTR key, LPCSTR value, xr_string& out, xr_string& error)
@@ -84,14 +86,14 @@ namespace weapon_parts
 		if (!is_placement_prop(key) || out.empty())
 			return true;
 
-		if (!xr_strcmp(key, PROP_BONE))
+		if (!xr_strcmp(key, PROP_BONE) || !xr_strcmp(key, PROP_VISUAL))
 		{
-			string256 name;
+			string_path name;
 			xr_strcpy(name, value);
 			_Trim(name);
 			if (!*name || strchr(name, ','))
 			{
-				error = "bone must be one bone name";
+				error = !xr_strcmp(key, PROP_BONE) ? "bone must be one bone name" : "visual must be one mesh path";
 				return false;
 			}
 			out = name;
@@ -149,6 +151,8 @@ namespace weapon_parts
 			}
 			else if (!xr_strcmp(p.key, PROP_HIDES))
 				split_names(p.value.c_str(), out.hides);
+			else if (!xr_strcmp(p.key, PROP_VISUAL))
+				out.visual = p.value;
 		}
 		return out.bone.size() != 0;
 	}

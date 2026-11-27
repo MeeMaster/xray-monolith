@@ -38,6 +38,7 @@
 #include "../xrEngine/GameMtlLib.h"
 #include "pch_script.h"
 #include "script_game_object.h"
+#include "weapon_part_tree.h"
 #include "ai/stalker/ai_stalker.h"
 
 #define WEAPON_REMOVE_TIME		60000
@@ -176,6 +177,7 @@ CWeapon::~CWeapon()
 {
 	xr_delete(m_UIScope);
 	delete_data(m_scopes);
+	xr_delete(m_part_tree);
 }
 
 void CWeapon::Hit(SHit* pHDS)
@@ -1160,7 +1162,44 @@ BOOL CWeapon::net_Spawn(CSE_Abstract* DC)
 	VERIFY((u32) iAmmoElapsed == m_magazine.size());
 	m_bAmmoWasSpawned = false;
 
+	// 4b: the part tree follows the record the item spawned with
+	m_part_tree_dirty = true;
+	parts_update();
+
 	return bResult;
+}
+
+void CWeapon::parts_update()
+{
+	if (!m_part_tree_dirty)
+		return;
+	m_part_tree_dirty = false;
+	IKinematics* gun = Visual() ? Visual()->dcast_PKinematics() : nullptr;
+	if (instance_record().parts.empty())
+	{
+		xr_delete(m_part_tree);
+		return;
+	}
+	if (!m_part_tree)
+		m_part_tree = xr_new<CWeaponPartTree>();
+	string128 owner;
+	xr_sprintf(owner, "%s [%u]", cNameSect().c_str(), ID());
+	m_part_tree->build(instance_record(), gun, owner);
+}
+
+void CWeapon::RenderAttachments()
+{
+	inherited::RenderAttachments();
+	parts_update();
+	if (m_part_tree && Visual())
+		m_part_tree->render(Visual()->dcast_PKinematics(), XFORM());
+}
+
+void CWeapon::render_hud_parts(IKinematics* model, const Fmatrix& xform)
+{
+	parts_update();
+	if (m_part_tree)
+		m_part_tree->render(model, xform);
 }
 
 void CWeapon::net_Destroy()
@@ -1174,6 +1213,9 @@ void CWeapon::net_Destroy()
 	Light_Destroy();
 
 	while (m_magazine.size()) m_magazine.pop_back();
+
+	xr_delete(m_part_tree); // 4b: rebuilt on the next spawn
+	m_part_tree_dirty = false;
 }
 
 BOOL CWeapon::IsUpdating()
@@ -1456,6 +1498,7 @@ void CWeapon::UpdateCL()
 	inherited::UpdateCL();
 	UpdateHUDAddonsVisibility();
 	UpdateWorldMotion();
+	parts_update();
 	if (Device.dwTimeGlobal >= m_instance_sync_time)
 	{
 		m_instance_sync_time = Device.dwTimeGlobal + 500;

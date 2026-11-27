@@ -14,7 +14,9 @@ namespace weapon_parts
 	//   bone   = <bone on the parent model>
 	//   offset = x, y, z [, h, p, b]     metres; degrees, as script_attachment:set_rotation takes them
 	//   hides  = bone, bone, ...         gun bones hidden while the part is fitted
+	//   visual = <mesh path>             optional (4b): the model to draw; default the part section's `visual`
 	extern LPCSTR const PROP_BONE;
+	extern LPCSTR const PROP_VISUAL;
 	extern LPCSTR const PROP_OFFSET;
 	extern LPCSTR const PROP_HIDES;
 
@@ -30,6 +32,7 @@ namespace weapon_parts
 		Fvector pos = { 0.f, 0.f, 0.f };
 		Fvector hpb = { 0.f, 0.f, 0.f }; // degrees
 		xr_vector<shared_str> hides;
+		shared_str visual;             // empty: the part section's `visual`
 	};
 	// Reads the placement props of a part. false when it has no bone (the props are written by the resolver)
 	bool read_placement(const SInstancePart& part, SPlacement& out);

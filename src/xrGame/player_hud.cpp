@@ -413,6 +413,8 @@ void attachable_hud_item::render()
 			if (pair.second->GetType() == eSA_HUD)
 			pair.second->renderable_Render();
 	}
+
+	m_parent_hud_item->render_hud_parts(m_model, m_item_transform); // 4b
 }
 
 bool attachable_hud_item::render_item_ui_query()

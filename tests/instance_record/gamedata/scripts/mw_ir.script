@@ -35,6 +35,13 @@
 --                                     by bone with Part_bench's OGF parser (mw_ir_ogf.script) on the AK test model
 -- prepare() also places the marked gun's scope (PLACEMENT), and verify() checks the placement.
 --
+-- Engine-drawn parts (4b, WEAPON_ENGINE_PLAN.md 8.2):
+--   run_string mw_ir.parts()          on the gun in your hands: fits two visible test parts (copies of the gun's
+--                                     own model, one turned 90 degrees on top, one nested on it), plus parts that
+--                                     must not draw, and checks the part tree. The two stay for you to look at.
+--   run_string mw_ir.parts_check()    the gun in your hands still has the two drawn parts (after save/load etc.)
+--   run_string mw_ir.parts_clear()    removes the test parts from the gun in your hands
+--
 -- Every result goes to the log as "[mw_ir] PASS ..." or "[mw_ir] FAIL ...".
 
 local MARK = "mw_ir_mark"
@@ -815,4 +822,117 @@ function placement()
 			#bad_rot > 0 and (": " .. table.concat(bad_rot, ", ")) or ""))
 	end
 	finish("placement")
+end
+
+---------------------------------------------------------------------------
+-- parts(): engine-drawn part tree (4b, WEAPON_ENGINE_PLAN.md 8.2)
+---------------------------------------------------------------------------
+
+local PT = "mw_pt_"   -- mount prefix of the test parts
+
+local function tree_by_id(w)
+	local t = {}
+	for _, n in ipairs(w:get_part_tree()) do t[n.id] = n end
+	return t
+end
+
+local function test_parts(w)
+	local out = {}
+	for _, p in pairs(w:get_parts()) do
+		if string.sub(p.mount, 1, #PT) == PT then out[#out + 1] = p end
+	end
+	return out
+end
+
+function parts_clear()
+	local w = gun()
+	if not w then return end
+	local n = 0
+	for _, p in ipairs(test_parts(w)) do
+		if p.parent == 0 then n = n + w:record_remove_part(p.id) end
+	end
+	say(string.format("removed %d test parts", n))
+end
+
+function parts()
+	local w = gun()
+	if not w then return end
+	begin()
+	for _, p in ipairs(test_parts(w)) do
+		if p.parent == 0 then w:record_remove_part(p.id) end
+	end
+
+	local sect = w:section()
+	local vis = ini_sys:r_string_ex(sect, "visual")
+	local root
+	for name, b in pairs(model_bones(sect) or {}) do
+		if b.parent == "" then root = name end
+	end
+	if not check(vis and root, "the gun has a visual and a root bone: " .. tostring(vis) .. ", " .. tostring(root)) then
+		return finish("parts")
+	end
+
+	local function add(parent, mount, props)
+		local id = w:record_add_part(parent, mount, "mw_pt_dummy")
+		for k, v in pairs(props) do w:set_part_prop(id, k, v) end
+		return id
+	end
+	-- Two drawn parts: A on the gun's root bone, 12 cm up and turned 90 degrees; B nested on A's root bone, 12 cm above A
+	local a = add(0, PT .. "a", { visual = vis, bone = root, offset = "0, 0.12, 0, 90, 0, 0" })
+	local b = add(a, PT .. "b", { visual = vis, bone = root, offset = "0, 0.12, 0" })
+	-- Parts that must not draw, each for its own reason
+	local c = add(0, PT .. "c", { visual = vis })
+	local d = add(0, PT .. "d", { visual = vis, bone = "mw_no_such_bone" })
+	local e = add(0, PT .. "e", { visual = "mw\\no_such_model", bone = root })
+	local f = add(d, PT .. "f", { visual = vis, bone = root })
+	local g = add(a, PT .. "g", { visual = vis, bone = "mw_no_such_bone" })
+
+	local t = tree_by_id(w)
+	local function drawn(id, what)
+		local n = t[id]
+		check(n and n.drawn, what .. (n and (" " .. n.model .. " on " .. n.bone) or " missing from the tree"))
+	end
+	local function refused(id, what, needle)
+		local n = t[id]
+		check(n and not n.drawn and string.find(n.reason, needle, 1, true) ~= nil,
+			what .. ": " .. tostring(n and n.reason))
+	end
+	drawn(a, "part A on the gun is drawn:")
+	drawn(b, "part B nested on part A is drawn:")
+	refused(c, "a part without placement is not drawn", "no placement")
+	refused(d, "a part on a bone the gun lacks is not drawn", "bone not on the gun")
+	refused(e, "a part with a missing model is not drawn", "model not found")
+	refused(f, "a child of an undrawn part is not drawn", "parent part is not drawn")
+	refused(g, "a nested part on a bone its parent lacks is not drawn", "bone not on the parent part")
+
+	-- Removing parts rebuilds the tree
+	for _, id in ipairs({ c, d, e }) do w:record_remove_part(id) end
+	t = tree_by_id(w)
+	local count = 0
+	for _, p in ipairs(test_parts(w)) do if t[p.id] then count = count + 1 end end
+	check(count == 3 and t[a].drawn and t[b].drawn and t[g] and not t[g].drawn and not t[f],
+		"after removing the refused parts the tree has A, B and G: " .. count .. " nodes")
+	w:record_remove_part(g)
+
+	-- Moving a part rebuilds it in place
+	check(w:set_part_prop(b, "offset", "0, 0.24, 0") and tree_by_id(w)[b].drawn, "moving part B keeps it drawn")
+	finish("parts")
+	say("two test copies of the gun now sit on top of it. Check first person, third person, aiming, dropping it, "
+		.. "an NPC holding it, and save/load (then run parts_check()). parts_clear() removes them.")
+end
+
+function parts_check()
+	local w = gun()
+	if not w then return end
+	begin()
+	-- Only the test parts: the marked gun from prepare() carries parts of its own
+	local t = tree_by_id(w)
+	local drawn, total = 0, 0
+	for _, p in ipairs(test_parts(w)) do
+		local n = t[p.id]
+		if n then total = total + 1 end
+		if n and n.drawn then drawn = drawn + 1 end
+	end
+	check(#test_parts(w) == 2 and drawn == 2 and total == 2, string.format("the gun has its 2 test parts drawn (%d of %d)", drawn, total))
+	finish("parts_check")
 end

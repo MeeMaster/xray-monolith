@@ -53,6 +53,8 @@ struct SafemodeAnm
 
 // Change 3b (WEAPON_ENGINE_PLAN.md 6): the live state a rebuild carries over. Ammo is kept by section name, not by
 // index, so it survives a changed ammo list. Rifle and launcher rounds are kept apart whatever mode the gun is in.
+class CWeaponPartTree;
+
 struct SWeaponRuntimeSnapshot
 {
 	xr_vector<shared_str> rounds;   // rifle rounds, m_magazine order: the last one fires next
@@ -158,6 +160,17 @@ public:
 	virtual void shedule_Update(u32 dt);
 
 	virtual void renderable_Render();
+
+	// 4b (WEAPON_ENGINE_PLAN.md 8.2): parts drawn from the record's placement, in both views
+	virtual void RenderAttachments();
+	virtual void render_hud_parts(IKinematics* model, const Fmatrix& xform);
+	virtual void on_instance_parts_changed() { m_part_tree_dirty = true; }
+	void parts_update();                   // rebuilds the part tree if the parts changed
+	const CWeaponPartTree* part_tree() const { return m_part_tree; }
+private:
+	CWeaponPartTree* m_part_tree = nullptr;
+	bool m_part_tree_dirty = false;
+public:
 	virtual void render_hud_mode();
 	virtual bool need_renderable();
 

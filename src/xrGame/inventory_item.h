@@ -334,6 +334,8 @@ protected:
 	// After a change to the config overrides. Weapons queue a ReloadConfig; other items read the new section
 	// on their next spawn.
 	virtual void on_instance_config_changed() {}
+	// 4b: the record's parts or their props changed; a weapon rebuilds its part tree
+	virtual void on_instance_parts_changed() {}
 
 public:
 	const CSE_InstanceRecord& instance_record() const { return m_instance; }
