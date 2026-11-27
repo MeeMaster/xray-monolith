@@ -24,7 +24,7 @@ namespace instance_section
 		// never reach the section, so a record with only those needs none.
 		if (record.is_opaque())
 			return false;
-		if (record.has_config_overrides() || weapon_parts::active_sight_data(record).size())
+		if (record.has_config_overrides() || weapon_parts::role_signature(record).size())
 			return true;
 		stat_mods::Contributions mods;
 		stat_mods::collect(record, upgrades, mods);
@@ -37,18 +37,18 @@ namespace instance_section
 		stat_mods::Contributions mods;
 		if (!record.is_opaque())
 			stat_mods::collect(record, upgrades, mods);
-		const shared_str sight = record.is_opaque() ? shared_str() : weapon_parts::active_sight_data(record);
-		if (record.is_opaque() || (!record.has_config_overrides() && mods.empty() && !sight.size()))
+		const shared_str roles = record.is_opaque() ? shared_str() : weapon_parts::role_signature(record);
+		if (record.is_opaque() || (!record.has_config_overrides() && mods.empty() && !roles.size()))
 		{
 			pSettings->remove_dynamic_section(sect.c_str());
 			return shared_str();
 		}
 
-		// Layers, later ones winning (5.2): the base section, then part role data (5b: the active sight's scope
-		// keys), then overrides, then stacked modifiers (3d), which start from the overridden value
+		// Layers, later ones winning (5.2): the base section, then part role data (5b: sight, muzzle, launcher),
+		// then overrides, then stacked modifiers (3d), which start from the overridden value
 		CInifile::DynamicItems items;
 		items.reserve(record.overrides.size() + mods.size());
-		weapon_parts::sight_items(sight.c_str(), items);
+		weapon_parts::role_items(base, record, items);
 		for (const SInstanceProp& p : record.overrides)
 			if (!p.is_state_value())
 				items.push_back({ p.key, p.value });

@@ -111,6 +111,7 @@ enum EGameActions
 
 	kCAM_AUTOAIM,
 	kEDITOR,
+	kWPN_LIGHT_TOGGLE, // 5d: the light and laser parts of the active gun
 
 	kLASTACTION,
 	kNOTBINDED,

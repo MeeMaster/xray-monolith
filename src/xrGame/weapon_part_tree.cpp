@@ -108,11 +108,29 @@ CWeaponPartTree::~CWeaponPartTree()
 		release_light(it.second);
 }
 
+LPCSTR const CWeaponPartTree::PART_LIGHTS_KEY = "mw_weapon_part_lights";
+
+// Drops the keep-alive entry of a script's light (registry[PART_LIGHTS_KEY][light] = nil)
+static void unkeep_light(AttachmentScriptLight* light)
+{
+	if (!light)
+		return;
+	lua_State* L = ai().script_engine().lua();
+	lua_getfield(L, LUA_REGISTRYINDEX, CWeaponPartTree::PART_LIGHTS_KEY);
+	if (lua_istable(L, -1))
+	{
+		lua_pushlightuserdata(L, light);
+		lua_pushnil(L);
+		lua_rawset(L, -3);
+	}
+	lua_pop(L, 1);
+}
+
 void CWeaponPartTree::release_light(SOverride& o)
 {
+	if (o.light_ref > 0)
+		unkeep_light(o.light);
 	o.light = nullptr;
-	if (o.light_ref != LUA_NOREF && o.light_ref != LUA_REFNIL)
-		luaL_unref(ai().script_engine().lua(), LUA_REGISTRYINDEX, o.light_ref);
 	o.light_ref = LUA_NOREF;
 }
 
@@ -205,9 +223,19 @@ bool CWeaponPartTree::attach_light(u16 id, AttachmentScriptLight* light, int lua
 {
 	if (!light || !find(id))
 	{
-		if (lua_ref != LUA_NOREF && lua_ref != LUA_REFNIL)
-			luaL_unref(ai().script_engine().lua(), LUA_REGISTRYINDEX, lua_ref);
+		if (lua_ref > 0)
+			unkeep_light(light);
 		return false;
+	}
+	// The same light again: only the bone changes (detaching first would drop its keep-alive entry)
+	auto same = m_overrides.find(id);
+	if (same != m_overrides.end() && same->second.light == light)
+	{
+		same->second.light_bone = bone && *bone ? bone : "";
+		for (SNode& n : m_nodes)
+			if (n.id == id)
+				hook_up(n);
+		return true;
 	}
 	detach_light(id);
 	SOverride& o = m_overrides[id];
@@ -218,6 +246,19 @@ bool CWeaponPartTree::attach_light(u16 id, AttachmentScriptLight* light, int lua
 		if (n.id == id)
 			hook_up(n);
 	return true;
+}
+
+AttachmentScriptLight* CWeaponPartTree::light_of(u16 id) const
+{
+	auto it = m_overrides.find(id);
+	return it == m_overrides.end() ? nullptr : it->second.light;
+}
+
+bool CWeaponPartTree::light_attached(u16 id) const
+{
+	const SNode* n = find(id);
+	AttachmentScriptLight* l = light_of(id);
+	return n && n->att && l && n->att->GetLight() == l;
 }
 
 bool CWeaponPartTree::detach_light(u16 id)

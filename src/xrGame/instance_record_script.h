@@ -71,6 +71,19 @@ namespace instance_record_script
 	// run_place_parts calls each in registration order with (weapon, parts) and writes the bone, offset and hides
 	// they return into record. true when record changed. owner_name: for log lines.
 	bool has_place_parts();
+
+	// 5d (WEAPON_ENGINE_PLAN.md 9.1a). set_part_light_toggle_callback(func|nil): func(gun) runs when the
+	// wpn_light_toggle key is pressed; true means it handled the press. set_part_npc_light_rule(func|nil):
+	// func(npc, gun) is asked once a second for an NPC's gun: true or false switches its lights and lasers,
+	// nil leaves the engine rule (lights at night in combat, lasers in combat).
+	bool run_light_toggle(CScriptGameObject* gun);
+	int run_npc_light_rule(CScriptGameObject* npc, CScriptGameObject* gun); // -1: no answer
+	bool go_set_part_on(CScriptGameObject* self, u16 id, bool on);
+	bool go_is_part_on(CScriptGameObject* self, u16 id);
+	bool go_is_part_powered(CScriptGameObject* self, u16 id);
+	bool go_toggle_part_lights(CScriptGameObject* self);
+	// 5c: {pos = vector, rot = vector}, the aim offset the HUD moves to (part_aim_* applied); nil without a HUD
+	::luabind::object go_get_hud_aim_offset(lua_State* L, CScriptGameObject* self, bool alt);
 	bool run_place_parts(CScriptGameObject* owner, CSE_InstanceRecord& record, LPCSTR owner_name);
 	::luabind::object go_get_part_transform(lua_State* L, CScriptGameObject* self, u16 id, LPCSTR bone, bool hud);
 	::luabind::object go_get_part_transform_origin(lua_State* L, CScriptGameObject* self, u16 id, bool hud);

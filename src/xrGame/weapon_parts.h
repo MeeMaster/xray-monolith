@@ -42,6 +42,28 @@ namespace weapon_parts
 	// `sight_keys`), then scope_status = 1, so the gun reads them as a built-in scope.
 	void sight_items(LPCSTR data_section, CInifile::DynamicItems& out);
 
+	// Muzzle (5b-3): every muzzle part, the ones nearest the gun first, so the outermost wins a shared key. Data:
+	// its section's `muzzle_section`, else its section. Copied: silencer_* (not the gun's status, name, icon
+	// place), snd_silncer_*, flame_particles, smoke_particles, and its `muzzle_keys`. A muzzle part is a
+	// silencer when its data has `silencer = true` or is a vanilla silencer item (class W_SILENC): then
+	// silencer_status = 1 and silencer_koef_section = the outermost silencer's data.
+	void muzzle_parts(const CSE_InstanceRecord& record, xr_vector<const SInstancePart*>& out);
+	shared_str muzzle_data_section(const SInstancePart& part);
+	bool is_silencer_data(LPCSTR data_section);
+	// Launcher (5b-4): the launcher part nearest the gun, then record order. Data: `launcher_section`, else its
+	// section. Works only on a gun of a launcher class whose base can have a launcher (grenade_launcher_status
+	// 1 or 2: it has the launcher animations). Copied: grenade_vel, grenade_class, grenade_flame_particles,
+	// snd_shoot_grenade, launcher_* and its `launcher_keys`; then grenade_launcher_status = 1 and
+	// launcher_koef_section.
+	u16 active_launcher(const CSE_InstanceRecord& record);
+	shared_str launcher_data_section(const SInstancePart& part);
+	bool launcher_capable(LPCSTR base);
+
+	// Every role layer of the generated section, in order: sight, muzzle, launcher (5.2 "part role data")
+	void role_items(LPCSTR base, const CSE_InstanceRecord& record, CInifile::DynamicItems& out);
+	// What the role layers are built from; a change here is a config change. Empty: no role layer.
+	shared_str role_signature(const CSE_InstanceRecord& record);
+
 	// Checks a placement prop value and writes its normal form (numbers as %g, names trimmed, no repeats).
 	// Other keys pass through unchanged. false with a reason when the value is invalid.
 	bool normalise_prop(LPCSTR key, LPCSTR value, xr_string& out, xr_string& error);

@@ -123,6 +123,7 @@ void key_binding_registrator::script_register(lua_State* L)
 			value("kCUSTOM25", int(kCUSTOM25)),
 			value("kSAFEMODE", int(kSAFEMODE)),
 			value("kFREELOOK", int(kFREELOOK)),
+			value("kWPN_LIGHT_TOGGLE", int(kWPN_LIGHT_TOGGLE)),
 			value("kCAM_AUTOAIM", int(kCAM_AUTOAIM))
 		],
 		class_<key_binding_registrator>("DIK_keys")

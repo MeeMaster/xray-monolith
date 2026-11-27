@@ -1,6 +1,9 @@
 #include "stdafx.h"
 #include <dinput.h>
 #include "Actor.h"
+#include "Weapon.h"
+#include "weapon_part_devices.h"
+#include "instance_record_script.h"
 #include "Torch.h"
 #include "trade.h"
 #include "../xrEngine/CameraBase.h"
@@ -175,6 +178,14 @@ void CActor::IR_OnKeyboardPress(int cmd)
 	case kTORCH:
 		{
 			//SwitchTorch(); //Tronex: now it's controlled via LUA scripts for timing and animations
+			break;
+		}
+	case kWPN_LIGHT_TOGGLE:
+		{
+			// 5d: a script callback can take the press; else every light and laser part of the gun switches
+			if (CWeapon* w = smart_cast<CWeapon*>(inventory().ActiveItem()))
+				if (!instance_record_script::run_light_toggle(w->lua_game_object()))
+					CWeaponPartDevices::toggle(*w);
 			break;
 		}
 

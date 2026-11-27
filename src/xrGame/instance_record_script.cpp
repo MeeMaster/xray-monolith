@@ -15,6 +15,7 @@
 #include "script_engine.h"
 #include "stat_mods.h"
 #include "weapon_parts.h"
+#include "weapon_part_devices.h"
 #include "weapon_part_tree.h"
 #include "Weapon.h"
 #include "player_hud.h"
@@ -646,10 +647,21 @@ namespace instance_record_script
 		CWeaponPartTree* t = tree_of(self);
 		if (!t)
 			return false;
+		// Keeps the script's light alive while the part has it: registry[PART_LIGHTS_KEY][light pointer] = light
 		lua_State* L = light.lua_state();
+		lua_getfield(L, LUA_REGISTRYINDEX, CWeaponPartTree::PART_LIGHTS_KEY);
+		if (!lua_istable(L, -1))
+		{
+			lua_pop(L, 1);
+			lua_newtable(L);
+			lua_pushvalue(L, -1);
+			lua_setfield(L, LUA_REGISTRYINDEX, CWeaponPartTree::PART_LIGHTS_KEY);
+		}
+		lua_pushlightuserdata(L, *l);
 		light.pushvalue();
-		const int ref = luaL_ref(L, LUA_REGISTRYINDEX); // keeps the script's light alive while the part has it
-		return t->attach_light(id, *l, ref, bone);
+		lua_rawset(L, -3);
+		lua_pop(L, 1);
+		return t->attach_light(id, *l, 1, bone);
 	}
 
 	bool go_attach_part_light(CScriptGameObject* self, u16 id, const ::luabind::object& light)
@@ -1068,19 +1080,37 @@ namespace instance_record_script
 
 	// ---- 4d place_parts hooks ---------------------------------------------
 
-	static xr_vector<int> s_place_parts; // registry references, in registration order
+	// The hooks live in a named registry table (an array, registration order), not behind luaL_ref numbers: a
+	// numbered reference that something else frees by mistake gets reused for an unrelated value, and the engine
+	// then calls that value as a hook.
+	static LPCSTR const PLACE_PARTS_KEY = "mw_weapon_place_parts";
+	static int s_place_parts_count = 0;
 
-	static int find_place_parts(lua_State* L, int arg)
+	// Pushes registry[key], creating the table when it is missing
+	static void push_registry_table(lua_State* L, LPCSTR key)
 	{
-		for (u32 i = 0; i < s_place_parts.size(); ++i)
+		lua_getfield(L, LUA_REGISTRYINDEX, key);
+		if (lua_istable(L, -1))
+			return;
+		lua_pop(L, 1);
+		lua_newtable(L);
+		lua_pushvalue(L, -1);
+		lua_setfield(L, LUA_REGISTRYINDEX, key);
+	}
+
+	// 1-based position of the function at stack index arg in the hook table at stack index tbl; 0 when absent
+	static int find_place_parts(lua_State* L, int tbl, int arg)
+	{
+		const int n = int(lua_objlen(L, tbl));
+		for (int i = 1; i <= n; ++i)
 		{
-			lua_rawgeti(L, LUA_REGISTRYINDEX, s_place_parts[i]);
+			lua_rawgeti(L, tbl, i);
 			const bool same = !!lua_rawequal(L, -1, arg);
 			lua_pop(L, 1);
 			if (same)
-				return int(i);
+				return i;
 		}
-		return -1;
+		return 0;
 	}
 
 	// register_place_parts(func): true when added, false when it isn't a function or is registered already
@@ -1092,13 +1122,18 @@ namespace instance_record_script
 			lua_pushboolean(L, 0);
 			return 1;
 		}
-		if (find_place_parts(L, 1) >= 0)
+		push_registry_table(L, PLACE_PARTS_KEY);
+		const int tbl = lua_gettop(L);
+		if (find_place_parts(L, tbl, 1))
 		{
+			lua_settop(L, tbl - 1);
 			lua_pushboolean(L, 0);
 			return 1;
 		}
 		lua_pushvalue(L, 1);
-		s_place_parts.push_back(luaL_ref(L, LUA_REGISTRYINDEX));
+		lua_rawseti(L, tbl, int(lua_objlen(L, tbl)) + 1);
+		s_place_parts_count = int(lua_objlen(L, tbl));
+		lua_settop(L, tbl - 1);
 		lua_pushboolean(L, 1);
 		return 1;
 	}
@@ -1106,32 +1141,169 @@ namespace instance_record_script
 	// unregister_place_parts(func): true when it was registered
 	int lua_unregister_place_parts(lua_State* L)
 	{
-		const int i = lua_isfunction(L, 1) ? find_place_parts(L, 1) : -1;
-		if (i >= 0)
+		if (!lua_isfunction(L, 1))
 		{
-			luaL_unref(L, LUA_REGISTRYINDEX, s_place_parts[i]);
-			s_place_parts.erase(s_place_parts.begin() + i);
+			lua_pushboolean(L, 0);
+			return 1;
 		}
-		lua_pushboolean(L, i >= 0);
+		push_registry_table(L, PLACE_PARTS_KEY);
+		const int tbl = lua_gettop(L);
+		const int i = find_place_parts(L, tbl, 1);
+		if (i)
+		{
+			const int n = int(lua_objlen(L, tbl));
+			for (int k = i; k < n; ++k)
+			{
+				lua_rawgeti(L, tbl, k + 1);
+				lua_rawseti(L, tbl, k);
+			}
+			lua_pushnil(L);
+			lua_rawseti(L, tbl, n);
+			s_place_parts_count = n - 1;
+		}
+		lua_settop(L, tbl - 1);
+		lua_pushboolean(L, i != 0);
 		return 1;
+	}
+
+	// ---- 5d devices ---------------------------------------------------------
+
+	// Callbacks as named registry fields, for the reason the place_parts hooks are (above)
+	static LPCSTR const LIGHT_TOGGLE_KEY = "mw_weapon_light_toggle";
+	static LPCSTR const NPC_LIGHT_RULE_KEY = "mw_weapon_npc_light_rule";
+	static bool s_light_toggle = false;
+	static bool s_npc_light_rule = false;
+
+	static int set_callback(lua_State* L, bool& set, LPCSTR key, LPCSTR name)
+	{
+		if (!lua_isfunction(L, 1) && !lua_isnil(L, 1) && !lua_isnone(L, 1))
+		{
+			Msg("! [weapon parts] %s: needs a function or nil", name);
+			lua_pushboolean(L, 0);
+			return 1;
+		}
+		set = !!lua_isfunction(L, 1);
+		if (set)
+			lua_pushvalue(L, 1);
+		else
+			lua_pushnil(L);
+		lua_setfield(L, LUA_REGISTRYINDEX, key);
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+
+	int lua_set_part_light_toggle_callback(lua_State* L) { return set_callback(L, s_light_toggle, LIGHT_TOGGLE_KEY, "set_part_light_toggle_callback"); }
+	int lua_set_part_npc_light_rule(lua_State* L) { return set_callback(L, s_npc_light_rule, NPC_LIGHT_RULE_KEY, "set_part_npc_light_rule"); }
+
+	// Calls registry[key](a, b): 1 true, 0 false, -1 nil or an error
+	static int call_slot(bool set, LPCSTR key, CScriptGameObject* a, CScriptGameObject* b, LPCSTR name)
+	{
+		if (!set || !a)
+			return -1;
+		lua_State* L = ai().script_engine().lua();
+		const int top = lua_gettop(L);
+		lua_getfield(L, LUA_REGISTRYINDEX, key);
+		if (!lua_isfunction(L, -1))
+		{
+			lua_settop(L, top);
+			return -1;
+		}
+		::luabind::object(L, a).pushvalue();
+		int n = 1;
+		if (b)
+		{
+			::luabind::object(L, b).pushvalue();
+			n = 2;
+		}
+		int out = -1;
+		if (lua_pcall(L, n, 1, 0))
+			Msg("! [weapon parts] %s failed: %s", name, lua_isstring(L, -1) ? lua_tostring(L, -1) : "?");
+		else if (lua_isboolean(L, -1))
+			out = lua_toboolean(L, -1) ? 1 : 0;
+		lua_settop(L, top);
+		return out;
+	}
+
+	bool run_light_toggle(CScriptGameObject* gun)
+	{
+		return call_slot(s_light_toggle, LIGHT_TOGGLE_KEY, gun, nullptr, "the light toggle callback") == 1;
+	}
+
+	int run_npc_light_rule(CScriptGameObject* npc, CScriptGameObject* gun)
+	{
+		return call_slot(s_npc_light_rule, NPC_LIGHT_RULE_KEY, npc, gun, "the NPC light rule");
+	}
+
+	bool go_set_part_on(CScriptGameObject* self, u16 id, bool on)
+	{
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		return w && CWeaponPartDevices::set_on(*w, id, on);
+	}
+
+	bool go_is_part_on(CScriptGameObject* self, u16 id)
+	{
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		return w && w->part_devices() && w->part_devices()->is_lit(id);
+	}
+
+	bool go_is_part_powered(CScriptGameObject* self, u16 id)
+	{
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		return w && w->part_devices() && w->part_devices()->is_powered(id);
+	}
+
+	bool go_toggle_part_lights(CScriptGameObject* self)
+	{
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		return w && CWeaponPartDevices::toggle(*w);
+	}
+
+	::luabind::object go_get_hud_aim_offset(lua_State* L, CScriptGameObject* self, bool alt)
+	{
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		attachable_hud_item* h = w ? w->HudItemData() : nullptr;
+		if (!h)
+			return ::luabind::object();
+		Fvector pos, rot;
+		w->hud_aim_offset(alt ? 3 : 1, h, pos, rot);
+		::luabind::object t = ::luabind::newtable(L);
+		t["pos"] = pos;
+		t["rot"] = rot;
+		return t;
 	}
 
 	bool has_place_parts()
 	{
-		return !s_place_parts.empty();
+		return s_place_parts_count > 0;
 	}
 
 	bool run_place_parts(CScriptGameObject* owner, CSE_InstanceRecord& record, LPCSTR owner_name)
 	{
-		if (s_place_parts.empty() || !owner || record.is_opaque() || record.parts.empty())
+		if (s_place_parts_count <= 0 || !owner || record.is_opaque() || record.parts.empty())
 			return false;
 		lua_State* L = ai().script_engine().lua();
 		bool changed = false;
-		const xr_vector<int> hooks = s_place_parts; // a hook may register or unregister hooks
-		for (int ref : hooks)
+		// A snapshot of the hooks, since a hook may register or unregister hooks
+		const int base = lua_gettop(L);
+		push_registry_table(L, PLACE_PARTS_KEY);
+		const int live = lua_gettop(L);
+		const int count = int(lua_objlen(L, live));
+		lua_createtable(L, count, 0);
+		const int snap = lua_gettop(L);
+		for (int k = 1; k <= count; ++k)
+		{
+			lua_rawgeti(L, live, k);
+			lua_rawseti(L, snap, k);
+		}
+		for (int k = 1; k <= count; ++k)
 		{
 			const int top = lua_gettop(L);
-			lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+			lua_rawgeti(L, snap, k);
+			if (!lua_isfunction(L, -1))
+			{
+				lua_settop(L, top);
+				continue;
+			}
 			::luabind::object(L, owner).pushvalue();
 			get_parts(L, record).pushvalue(); // each hook sees what the ones before it returned
 			if (lua_pcall(L, 2, 1, 0))
@@ -1181,6 +1353,7 @@ namespace instance_record_script
 			}
 			lua_settop(L, top);
 		}
+		lua_settop(L, base);
 		return changed;
 	}
 
@@ -1322,5 +1495,7 @@ void weapon_parts_registrator::script_register(lua_State* L)
 		::luabind::def("alife_inventory_item", &alife_inventory_item_id)
 	];
 	lua_register(L, "register_place_parts", &instance_record_script::lua_register_place_parts);
+	lua_register(L, "set_part_light_toggle_callback", &instance_record_script::lua_set_part_light_toggle_callback);
+	lua_register(L, "set_part_npc_light_rule", &instance_record_script::lua_set_part_npc_light_rule);
 	lua_register(L, "unregister_place_parts", &instance_record_script::lua_unregister_place_parts);
 }

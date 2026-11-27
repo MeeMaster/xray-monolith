@@ -29,3 +29,44 @@ scope_texture = none
 [mw_pt_sight_ref]:bandage
 role = sight
 sight_section = wpn_addon_scope
+
+; 5b-3 muzzles (mw_ir.muzzles()): a silencer with a koef, and a brake that only adds a key through muzzle_keys
+[mw_pt_muzzle_sil]:bandage
+role = muzzle
+silencer = true
+bullet_hit_power_k = 0.9
+
+[mw_pt_muzzle_brake]:bandage
+role = muzzle
+muzzle_keys = fire_dispersion_base
+fire_dispersion_base = 0.33
+
+; 5b-4 launchers (mw_ir.launchers())
+[mw_pt_launcher_gl]:bandage
+role = launcher
+grenade_vel = 77
+cam_dispersion_k = 0.8
+
+; 5c aim (mw_ir.aim()): a sight that lowers the aim
+[mw_pt_sight_aim]:bandage
+role = sight
+scope_texture = none
+part_aim_delta_pos = 0, -0.02, 0
+
+; 5d devices (mw_ir.devices()): a flashlight that needs power, a laser that does not, a battery of 7 seconds
+[mw_pt_flashlight]:bandage
+role = light
+needs_power = true
+light_range = 20
+light_cone = 30
+light_color = 1, 0.95, 0.85
+
+[mw_pt_laser]:bandage
+role = laser
+laser_range = 50
+laser_color = 1, 0, 0
+
+[mw_pt_cell]:bandage
+role = battery
+part_visual = none
+battery_capacity = 0.002

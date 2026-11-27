@@ -71,8 +71,14 @@ public:
 
 	// Hands a light to a part. lua_ref is a registry reference that keeps the script's light alive; the tree
 	// releases it when the light is detached or replaced, the part goes, or the tree is destroyed.
+	// lua_ref > 0: the light is a script's, kept alive in registry[PART_LIGHTS_KEY][light] until released here
 	bool attach_light(u16 id, AttachmentScriptLight* light, int lua_ref, LPCSTR bone);
+	static LPCSTR const PART_LIGHTS_KEY;
 	bool detach_light(u16 id);
+	// 5d: the light given to a part (by a script or the engine's devices), and whether its attachment carries it now
+	AttachmentScriptLight* light_of(u16 id) const;
+	bool light_attached(u16 id) const;
+	bool has_node(u16 id) const { return find(id) != nullptr; }
 
 	// A drawn part's bone (or its origin when bone is empty) in world space, for a gun model drawn with gun_xform
 	bool part_xform(u16 id, LPCSTR bone, IKinematics* gun, const Fmatrix& gun_xform, Fmatrix& out) const;

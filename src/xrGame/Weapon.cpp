@@ -41,6 +41,7 @@
 #include "weapon_part_tree.h"
 #include "instance_record_script.h"
 #include "weapon_parts.h"
+#include "weapon_part_devices.h"
 #include "Scope.h"
 #include "Silencer.h"
 #include "GrenadeLauncher.h"
@@ -182,6 +183,7 @@ CWeapon::~CWeapon()
 {
 	xr_delete(m_UIScope);
 	delete_data(m_scopes);
+	xr_delete(m_part_devices); // before the tree: it takes its lights off the tree's parts
 	xr_delete(m_part_tree);
 }
 
@@ -816,6 +818,18 @@ void CWeapon::Load(LPCSTR section)
 	m_zoom_params.m_fZoomRotateTime = pSettings->r_float(section, "zoom_rotate_time");
 	m_fZoomRotateModifier = READ_IF_EXISTS(pSettings, r_float, section, "zoom_rotate_modifier", 1);
 	m_zoom_params.m_fBaseZoomFactor = READ_IF_EXISTS(pSettings, r_float, config_section(), "scope_zoom_factor", 0);
+	{
+		// 5c
+		static LPCSTR const keys[2][2] = { { "part_aim_pos", "part_aim_rot" }, { "part_aim_alt_pos", "part_aim_alt_rot" } };
+		for (int a = 0; a < 2; ++a)
+			for (int k = 0; k < 2; ++k)
+			{
+				m_part_aim_set[a][k] = !!pSettings->line_exist(section, keys[a][k]);
+				m_part_aim[a][k] = m_part_aim_set[a][k] ? pSettings->r_fvector3(section, keys[a][k]) : Fvector().set(0, 0, 0);
+			}
+		m_part_aim_delta[0] = READ_IF_EXISTS(pSettings, r_fvector3, section, "part_aim_delta_pos", Fvector().set(0, 0, 0));
+		m_part_aim_delta[1] = READ_IF_EXISTS(pSettings, r_fvector3, section, "part_aim_delta_rot", Fvector().set(0, 0, 0));
+	}
 	m_modular_attachments = READ_IF_EXISTS(pSettings, r_bool, section, "modular_attachments", false);
 
 	if (m_eScopeStatus == ALife::eAddonAttachable)
@@ -874,6 +888,8 @@ void CWeapon::Load(LPCSTR section)
 		m_iSilencerX = pSettings->r_s32(section, "silencer_x");
 		m_iSilencerY = pSettings->r_s32(section, "silencer_y");
 	}
+	else
+		m_sSilencerName = nullptr; // a config switched to built-in (a muzzle part) must not weigh the old item
 
 	if (m_eGrenadeLauncherStatus == ALife::eAddonAttachable)
 	{
@@ -881,6 +897,8 @@ void CWeapon::Load(LPCSTR section)
 		m_iGrenadeLauncherX = pSettings->r_s32(section, "grenade_launcher_x");
 		m_iGrenadeLauncherY = pSettings->r_s32(section, "grenade_launcher_y");
 	}
+	else
+		m_sGrenadeLauncherName = nullptr; // as the silencer name above (5b-4)
 
 	InitAddons();
 	if (pSettings->line_exist(section, "weapon_remove_time"))
@@ -1217,6 +1235,8 @@ void CWeapon::parts_rebuild()
 			m_part_tree->build(instance_record(), gun, owner, this);
 	}
 
+	part_devices_sync(); // 5d: lights go on the freshly built parts
+
 	// 4c: the gun bones the parts hide
 	xr_vector<shared_str> hides;
 	if (m_part_tree)
@@ -1231,6 +1251,21 @@ void CWeapon::parts_rebuild()
 		if (Visual())
 			UpdateAddonsVisibility();
 	}
+}
+
+void CWeapon::part_devices_sync()
+{
+	bool any = false;
+	for (const SInstancePart& p : instance_record().parts)
+		any = any || CWeaponPartDevices::is_device(p);
+	if (!any)
+	{
+		xr_delete(m_part_devices);
+		return;
+	}
+	if (!m_part_devices)
+		m_part_devices = xr_new<CWeaponPartDevices>();
+	m_part_devices->sync(*this);
 }
 
 LPCSTR CWeapon::part_subsystem_role(EPartSubsystem s)
@@ -1321,6 +1356,7 @@ void CWeapon::net_Destroy()
 
 	while (m_magazine.size()) m_magazine.pop_back();
 
+	xr_delete(m_part_devices); // 5d
 	xr_delete(m_part_tree); // 4b: rebuilt on the next spawn
 	m_part_tree_dirty = false;
 	m_part_hides.clear();
@@ -1608,6 +1644,8 @@ void CWeapon::UpdateCL()
 	UpdateHUDAddonsVisibility();
 	UpdateWorldMotion();
 	parts_update();
+	if (m_part_devices)
+		m_part_devices->update(*this); // 5d
 	if (Device.dwTimeGlobal >= m_instance_sync_time)
 	{
 		m_instance_sync_time = Device.dwTimeGlobal + 500;
@@ -2256,8 +2294,31 @@ void CWeapon::ApplyAddonsVisibility(IKinematics* K, bool hud_copy)
 		addon(wpn_grenade_launcher, GrenadeLauncherAttachable(), IsGrenadeLauncherAttached(), m_eGrenadeLauncherStatus);
 	}
 
+	// 5b: a subsystem the parts have taken over is drawn by its parts, so the gun's own addon bone stays hidden
+	if (part_takes_over(PART_SIGHT))
+		set(wpn_scope, false, true);
+	if (part_takes_over(PART_MUZZLE))
+		set(wpn_silencer, false, true);
+	if (part_takes_over(PART_LAUNCHER))
+		set(wpn_grenade_launcher, false, true);
+
 	for (const shared_str& b : m_part_hides)
 		set(b, false, true);
+}
+
+void CWeapon::hud_aim_offset(u8 idx, attachable_hud_item* hi, Fvector& pos, Fvector& rot) const
+{
+	pos = hi->m_measures.m_hands_offset[0][idx];
+	rot = hi->m_measures.m_hands_offset[1][idx];
+	if (idx != 1 && idx != 3)
+		return;
+	const int a = idx == 1 ? 0 : 1;
+	if (m_part_aim_set[a][0])
+		pos = m_part_aim[a][0];
+	if (m_part_aim_set[a][1])
+		rot = m_part_aim[a][1];
+	pos.add(m_part_aim_delta[0]);
+	rot.add(m_part_aim_delta[1]);
 }
 
 void CWeapon::UpdateAddonsVisibility()
@@ -2829,7 +2890,9 @@ bool CWeapon::IsRotatingToZoom()
 		if (idx == 0) {
 			return !hi->m_measures.m_hands_offset[0][5].similar(m_hud_offset[0], .02f);
 		}
-		return !hi->m_measures.m_hands_offset[0][idx].similar(m_hud_offset[0], .02f);
+		Fvector pos, rot;
+		hud_aim_offset(idx, hi, pos, rot);
+		return !pos.similar(m_hud_offset[0], .02f);
 	}
 	return (m_zoom_params.m_fZoomRotationFactor < 1.f);
 }
@@ -3335,10 +3398,8 @@ void CWeapon::UpdateHudAdditional(Fmatrix& trans)
 				curr_offs = hi->m_measures.m_hands_offset[0][5]; //pos,normal2
 				curr_rot = hi->m_measures.m_hands_offset[1][5]; //pos,normal2
 			}
-			else {
-				curr_offs = hi->m_measures.m_hands_offset[0][idx]; //pos,aim
-				curr_rot = hi->m_measures.m_hands_offset[1][idx]; //rot,aim
-			}
+			else
+				hud_aim_offset(idx, hi, curr_offs, curr_rot); //pos,rot,aim; 5c: a part's or script's aim wins
 		}
 		
 		float factor;

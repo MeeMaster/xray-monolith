@@ -118,6 +118,7 @@ _action actions[] = {
 	{"freelook", kFREELOOK, _both},
 	{"cam_autoaim", kCAM_AUTOAIM, _sp},
 	{"editor", kEDITOR, _both},
+	{"wpn_light_toggle", kWPN_LIGHT_TOGGLE, _sp},
 	{NULL, kLASTACTION, _both}
 };
 

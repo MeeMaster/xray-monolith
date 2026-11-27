@@ -54,6 +54,7 @@ struct SafemodeAnm
 // Change 3b (WEAPON_ENGINE_PLAN.md 6): the live state a rebuild carries over. Ammo is kept by section name, not by
 // index, so it survives a changed ammo list. Rifle and launcher rounds are kept apart whatever mode the gun is in.
 class CWeaponPartTree;
+class CWeaponPartDevices;
 
 struct SWeaponRuntimeSnapshot
 {
@@ -177,11 +178,25 @@ public:
 	u16 active_sight();
 	// A vanilla scope, silencer or launcher for a subsystem that parts have taken over: can't be attached
 	bool vanilla_addon_blocked(PIItem item);
+
+	// 5c: aim offsets from the config section (a sight part's data or a script override) over the HUD section's.
+	// part_aim_pos / part_aim_rot replace aim_hud_offset_pos / rot, part_aim_alt_pos / rot the alt ones, and
+	// part_aim_delta_pos / rot are added to both. Same units as the HUD section.
+	void hud_aim_offset(u8 idx, attachable_hud_item* hi, Fvector& pos, Fvector& rot) const;
+	Fvector m_part_aim[2][2];          // [aim, alt][pos, rot]
+	bool m_part_aim_set[2][2] = {};
+	Fvector m_part_aim_delta[2];       // [pos, rot]
 	void parts_update();                   // rebuilds the part tree if the parts changed, applies the view
 	CWeaponPartTree* part_tree_rw() { parts_update(); return m_part_tree; }
 	const CWeaponPartTree* part_tree() const { return m_part_tree; }
 private:
 	CWeaponPartTree* m_part_tree = nullptr;
+	CWeaponPartDevices* m_part_devices = nullptr; // 5d: light and laser parts
+public:
+	CWeaponPartTree* part_tree_rw_nobuild() { return m_part_tree; }
+	CWeaponPartDevices* part_devices() { return m_part_devices; }
+	void part_devices_sync();
+protected:
 	bool m_part_tree_dirty = false;
 	xr_vector<u16> m_role_parts[PART_SUBSYSTEMS];
 	bool m_role_parts_dirty = true;

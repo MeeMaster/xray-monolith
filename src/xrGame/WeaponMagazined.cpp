@@ -1590,9 +1590,14 @@ void CWeaponMagazined::InitAddons()
 
 void CWeaponMagazined::LoadSilencerKoeffs()
 {
-	if (m_eSilencerStatus == ALife::eAddonAttachable)
+	// 5b-3: a built-in silencer reads them from silencer_koef_section (a muzzle part's data); none: no change
+	LPCSTR sect = m_eSilencerStatus == ALife::eAddonAttachable ? m_sSilencerName.c_str()
+		: m_eSilencerStatus == ALife::eAddonPermanent ? READ_IF_EXISTS(pSettings, r_string, config_section(), "silencer_koef_section", nullptr)
+		: nullptr;
+	if (!sect)
+		m_silencer_koef.Reset();
+	else
 	{
-		LPCSTR sect = m_sSilencerName.c_str();
 		m_silencer_koef.hit_power = READ_IF_EXISTS(pSettings, r_float, sect, "bullet_hit_power_k", 1.0f);
 		m_silencer_koef.hit_impulse = READ_IF_EXISTS(pSettings, r_float, sect, "bullet_hit_impulse_k", 1.0f);
 		m_silencer_koef.bullet_speed = READ_IF_EXISTS(pSettings, r_float, sect, "bullet_speed_k", 1.0f);
@@ -1623,10 +1628,15 @@ void CWeaponMagazined::LoadSilencerKoeffs()
 
 void CWeaponMagazined::LoadScopeKoeffs()
 {
-	if (m_eScopeStatus == ALife::eAddonAttachable
-		&& (!m_modular_attachments || (m_flagsAddOnState & CSE_ALifeItemWeapon::eWeaponAddonScope)))
+	// 5b-2: a built-in scope reads them from scope_koef_section (a sight part's data); none: no change
+	LPCSTR koef_sect = m_eScopeStatus == ALife::eAddonPermanent
+		? READ_IF_EXISTS(pSettings, r_string, config_section(), "scope_koef_section", nullptr) : nullptr;
+	if (m_eScopeStatus != ALife::eAddonAttachable && !koef_sect)
+		m_scope_koef.Reset();
+	if (koef_sect || (m_eScopeStatus == ALife::eAddonAttachable
+		&& (!m_modular_attachments || (m_flagsAddOnState & CSE_ALifeItemWeapon::eWeaponAddonScope))))
 	{
-		LPCSTR sect = GetScopeName().c_str();
+		LPCSTR sect = koef_sect ? koef_sect : GetScopeName().c_str();
         if (!sect)
             Debug.fatal(DEBUG_INFO, "!CWeaponMagazined::LoadScopeKoeffs ERROR: GetScopeName for `%s` returns null, check scope_name in ltx, m_scopes.size() %d, m_cur_scope %d", cNameSect_str(), m_scopes.size(), m_cur_scope);
 		m_scope_koef.cam_dispersion = READ_IF_EXISTS(pSettings, r_float, sect, "cam_dispersion_k", 1.0f);

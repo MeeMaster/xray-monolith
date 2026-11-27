@@ -366,9 +366,9 @@ bool CInventoryItem::set_instance_record(const CSE_InstanceRecord& record, bool 
 		Msg("! [instance record] %s [%u] has a record from a newer build; it is read-only", object().cName().c_str(), object_id());
 		return false;
 	}
-	// 5b-2: the active sight's scope keys are a layer of the section, so another sight is another config
+	// 5b: the role parts' data (sight, muzzle, launcher) is a layer of the section, so other role data is another config
 	const bool config_changed = !m_instance.same_config(record) ||
-		weapon_parts::active_sight_data(m_instance) != weapon_parts::active_sight_data(record);
+		weapon_parts::role_signature(m_instance) != weapon_parts::role_signature(record);
 	const bool parts_changed = !(m_instance.parts == record.parts);
 	m_instance = record;
 	if (parts_changed)

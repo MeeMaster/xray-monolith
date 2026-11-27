@@ -3725,5 +3725,7 @@ void CCC_RegisterCommands()
 
 	CMD1(CCC_MovePathQueryPosThreshold, "movement_manager_move_along_path_query_pos_threshold");
     CMD4(CCC_Integer, "show_actor_body", &showActorBody, 0, 2);
+    extern int g_wpn_part_power;
+    CMD4(CCC_Integer, "wpn_part_power", &g_wpn_part_power, 0, 1); // 5d: 0 = light and laser parts always powered
     CMD4(CCC_Integer, "disable_actor_body_rotation_delay", &disableActorBodyRotationDelay, 0, 1);
 }

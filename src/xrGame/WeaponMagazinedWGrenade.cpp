@@ -696,13 +696,20 @@ void CWeaponMagazinedWGrenade::InitAddons()
 			ResetLauncherKoeffs();
 		}
 	}
+	else if (m_eGrenadeLauncherStatus == ALife::eAddonPermanent)
+		ApplyLauncherKoeffs(); // defaults unless launcher_koef_section names a section (5b-4)
 }
 
 void CWeaponMagazinedWGrenade::LoadLauncherKoeffs()
 {
-	if (m_eGrenadeLauncherStatus == ALife::eAddonAttachable)
+	// 5b-4: a built-in launcher reads them from launcher_koef_section (a launcher part's data); none: no change
+	LPCSTR sect = m_eGrenadeLauncherStatus == ALife::eAddonAttachable ? GetGrenadeLauncherName().c_str()
+		: m_eGrenadeLauncherStatus == ALife::eAddonPermanent ? READ_IF_EXISTS(pSettings, r_string, config_section(), "launcher_koef_section", nullptr)
+		: nullptr;
+	if (!sect)
+		m_launcher_koef.Reset();
+	else
 	{
-		LPCSTR sect = GetGrenadeLauncherName().c_str();
 		m_launcher_koef.cam_dispersion = READ_IF_EXISTS(pSettings, r_float, sect, "cam_dispersion_k", 1.0f);
 		m_launcher_koef.cam_disper_inc = READ_IF_EXISTS(pSettings, r_float, sect, "cam_dispersion_inc_k", 1.0f);
 		m_launcher_koef.pdm_base = READ_IF_EXISTS(pSettings, r_float, sect, "PDM_disp_base_k", 1.0f);

@@ -6,6 +6,7 @@
 #include "stdafx.h"
 #include "weapon_parts.h"
 #include "../xrServerEntities/InstanceRecord.h"
+#include "../xrServerEntities/clsid_game.h"
 #include "../Include/xrRender/Kinematics.h"
 #include "../xrEngine/bone.h"
 
@@ -220,19 +221,8 @@ namespace weapon_parts
 		return best;
 	}
 
-	shared_str sight_data_section(const SInstancePart& part)
-	{
-		if (!part.section.size() || !pSettings->section_exist(part.section))
-			return shared_str();
-		if (pSettings->line_exist(part.section, "sight_section"))
-		{
-			LPCSTR s = pSettings->r_string(part.section, "sight_section");
-			if (s && *s && pSettings->section_exist(s))
-				return shared_str(s);
-			Msg("! [weapon parts] [%s] sight_section [%s] does not exist; its own keys are used", part.section.c_str(), s ? s : "");
-		}
-		return part.section;
-	}
+	static shared_str data_section(const SInstancePart& part, LPCSTR key);
+	shared_str sight_data_section(const SInstancePart& part) { return data_section(part, "sight_section"); }
 
 	shared_str active_sight_data(const CSE_InstanceRecord& record)
 	{
@@ -244,25 +234,201 @@ namespace weapon_parts
 	{
 		if (!xr_strcmp(k, "scope_status") || !xr_strcmp(k, "scope_name") || !xr_strcmp(k, "scope_x") || !xr_strcmp(k, "scope_y"))
 			return false; // the gun's own: addon status, and the attachable scope's name and icon place
-		return !strncmp(k, "scope_", 6) || !strncmp(k, "s3ds_", 5) || !xr_strcmp(k, "min_scope_zoom_factor") ||
-			!xr_strcmp(k, "zoom_step_count") || !xr_strcmp(k, "holder_range_modifier") ||
-			!xr_strcmp(k, "holder_fov_modifier") || !xr_strcmp(k, "zoom_enabled");
+		if (!xr_strcmp(k, "scope_koef_section"))
+			return false; // written by the layer
+		return !strncmp(k, "scope_", 6) || !strncmp(k, "s3ds_", 5) || !strncmp(k, "part_aim_", 9) ||
+			!xr_strcmp(k, "min_scope_zoom_factor") || !xr_strcmp(k, "zoom_step_count") ||
+			!xr_strcmp(k, "holder_range_modifier") || !xr_strcmp(k, "holder_fov_modifier") || !xr_strcmp(k, "zoom_enabled");
+	}
+
+	// Copies the keys of a data section that pass is_key, or are named in its extra_key list
+	static void copy_keys(LPCSTR data_section, LPCSTR extra_key, bool (*is_key)(LPCSTR), CInifile::DynamicItems& out)
+	{
+		if (!data_section || !*data_section || !pSettings->section_exist(data_section))
+			return;
+		xr_vector<shared_str> extra;
+		if (pSettings->line_exist(data_section, extra_key))
+			split_names(pSettings->r_string(data_section, extra_key), extra);
+		for (const CInifile::Item& it : pSettings->r_section(data_section).Data)
+		{
+			if (!it.first.size() || !it.second.size())
+				continue;
+			if (is_key(it.first.c_str()) || std::find(extra.begin(), extra.end(), it.first) != extra.end())
+				out.push_back({ it.first, it.second });
+		}
+	}
+
+	static u32 part_depth(const CSE_InstanceRecord& record, const SInstancePart& part)
+	{
+		u32 d = 0;
+		for (const SInstancePart* p = &part; p && p->parent; p = record.find_part(p->parent))
+			++d;
+		return d;
+	}
+
+	// The part section's `key` when it names a section, else the part section; empty when neither exists
+	static shared_str data_section(const SInstancePart& part, LPCSTR key)
+	{
+		if (!part.section.size() || !pSettings->section_exist(part.section))
+			return shared_str();
+		if (pSettings->line_exist(part.section, key))
+		{
+			LPCSTR s = pSettings->r_string(part.section, key);
+			if (s && *s && pSettings->section_exist(s))
+				return shared_str(s);
+			Msg("! [weapon parts] [%s] %s [%s] does not exist; its own keys are used", part.section.c_str(), key, s ? s : "");
+		}
+		return part.section;
+	}
+
+	static bool is_muzzle_key(LPCSTR k)
+	{
+		if (!xr_strcmp(k, "silencer_status") || !xr_strcmp(k, "silencer_name") || !xr_strcmp(k, "silencer_x") ||
+			!xr_strcmp(k, "silencer_y") || !xr_strcmp(k, "silencer_koef_section"))
+			return false;
+		return !strncmp(k, "silencer_", 9) || !strncmp(k, "snd_silncer_", 12) || !xr_strcmp(k, "flame_particles") ||
+			!xr_strcmp(k, "smoke_particles");
+	}
+
+	static bool is_launcher_key(LPCSTR k)
+	{
+		if (!xr_strcmp(k, "launcher_koef_section") || !xr_strcmp(k, "launcher_section") || !xr_strcmp(k, "launcher_keys"))
+			return false;
+		return !strncmp(k, "launcher_", 9) || !xr_strcmp(k, "grenade_vel") || !xr_strcmp(k, "grenade_class") ||
+			!xr_strcmp(k, "grenade_flame_particles") || !xr_strcmp(k, "snd_shoot_grenade");
+	}
+
+	void muzzle_parts(const CSE_InstanceRecord& record, xr_vector<const SInstancePart*>& out)
+	{
+		out.clear();
+		if (record.is_opaque())
+			return;
+		for (const SInstancePart& p : record.parts)
+			if (has_role(p, "muzzle"))
+				out.push_back(&p);
+		std::stable_sort(out.begin(), out.end(), [&](const SInstancePart* a, const SInstancePart* b) {
+			return part_depth(record, *a) < part_depth(record, *b);
+		});
+	}
+
+	shared_str muzzle_data_section(const SInstancePart& part) { return data_section(part, "muzzle_section"); }
+
+	bool is_silencer_data(LPCSTR sect)
+	{
+		if (!sect || !*sect || !pSettings->section_exist(sect))
+			return false;
+		if (pSettings->line_exist(sect, "silencer"))
+			return !!pSettings->r_bool(sect, "silencer");
+		return pSettings->line_exist(sect, "class") && !xr_strcmp(pSettings->r_string(sect, "class"), "W_SILENC");
+	}
+
+	u16 active_launcher(const CSE_InstanceRecord& record)
+	{
+		if (record.is_opaque())
+			return 0;
+		u16 best = 0;
+		u32 best_depth = 0;
+		for (const SInstancePart& p : record.parts)
+		{
+			if (!has_role(p, "launcher"))
+				continue;
+			const u32 d = part_depth(record, p);
+			if (!best || d < best_depth)
+			{
+				best = p.id;
+				best_depth = d;
+			}
+		}
+		return best;
+	}
+
+	shared_str launcher_data_section(const SInstancePart& part) { return data_section(part, "launcher_section"); }
+
+	bool launcher_capable(LPCSTR base)
+	{
+		if (!base || !pSettings->section_exist(base) || !pSettings->line_exist(base, "class"))
+			return false;
+		const CLASS_ID c = pSettings->r_clsid(base, "class");
+		const bool cls = c == CLSID_OBJECT_W_MAGAZWGL || c == CLSID_OBJECT_W_FN2000 || c == CLSID_OBJECT_W_AK74 ||
+			c == CLSID_OBJECT_W_GROZA || c == TEXT2CLSID("WP_AK74") || c == TEXT2CLSID("WP_GROZA");
+		return cls && READ_IF_EXISTS(pSettings, r_s32, base, "grenade_launcher_status", 0) != 0;
+	}
+
+	void role_items(LPCSTR base, const CSE_InstanceRecord& record, CInifile::DynamicItems& out)
+	{
+		if (record.is_opaque())
+			return;
+		// Sight
+		const shared_str sight = active_sight_data(record);
+		if (sight.size())
+		{
+			sight_items(sight.c_str(), out);
+			out.push_back({ shared_str("scope_koef_section"), sight });
+		}
+
+		// Muzzle
+		xr_vector<const SInstancePart*> muzzles;
+		muzzle_parts(record, muzzles);
+		shared_str silencer;
+		for (const SInstancePart* p : muzzles)
+		{
+			const shared_str d = muzzle_data_section(*p);
+			copy_keys(d.c_str(), "muzzle_keys", is_muzzle_key, out);
+			if (is_silencer_data(d.c_str()))
+				silencer = d;
+		}
+		if (silencer.size())
+		{
+			bool sound = base && pSettings->line_exist(base, "snd_silncer_shot");
+			for (const CInifile::DynamicItem& it : out)
+				sound = sound || !xr_strcmp(it.key, "snd_silncer_shot");
+			if (sound)
+			{
+				out.push_back({ shared_str("silencer_status"), shared_str("1") });
+				out.push_back({ shared_str("silencer_koef_section"), silencer });
+			}
+			else
+				Msg("! [weapon parts] [%s] has no snd_silncer_shot and silencer [%s] gives none; the gun stays unsilenced", base, silencer.c_str());
+		}
+
+		// Launcher
+		if (const SInstancePart* p = record.find_part(active_launcher(record)))
+		{
+			const shared_str d = launcher_data_section(*p);
+			if (!launcher_capable(base))
+				Msg("! [weapon parts] [%s] is not a launcher gun (class and grenade_launcher_status); launcher part [%s] does nothing",
+					base, p->section.c_str());
+			else if (d.size())
+			{
+				copy_keys(d.c_str(), "launcher_keys", is_launcher_key, out);
+				out.push_back({ shared_str("grenade_launcher_status"), shared_str("1") });
+				out.push_back({ shared_str("launcher_koef_section"), d });
+			}
+		}
+	}
+
+	shared_str role_signature(const CSE_InstanceRecord& record)
+	{
+		if (record.is_opaque())
+			return shared_str();
+		xr_string s;
+		const shared_str sight = active_sight_data(record);
+		if (sight.size())
+			s.append("s:").append(sight.c_str()).append(";");
+		xr_vector<const SInstancePart*> muzzles;
+		muzzle_parts(record, muzzles);
+		for (const SInstancePart* p : muzzles)
+			s.append("m:").append(muzzle_data_section(*p).c_str()).append(";");
+		if (const SInstancePart* p = record.find_part(active_launcher(record)))
+			s.append("l:").append(launcher_data_section(*p).c_str()).append(";");
+		return s.empty() ? shared_str() : shared_str(s.c_str());
 	}
 
 	void sight_items(LPCSTR data_section, CInifile::DynamicItems& out)
 	{
 		if (!data_section || !*data_section || !pSettings->section_exist(data_section))
 			return;
-		xr_vector<shared_str> extra;
-		if (pSettings->line_exist(data_section, "sight_keys"))
-			split_names(pSettings->r_string(data_section, "sight_keys"), extra);
-		for (const CInifile::Item& it : pSettings->r_section(data_section).Data)
-		{
-			if (!it.first.size() || !it.second.size())
-				continue;
-			if (is_sight_key(it.first.c_str()) || std::find(extra.begin(), extra.end(), it.first) != extra.end())
-				out.push_back({ it.first, it.second });
-		}
+		copy_keys(data_section, "sight_keys", is_sight_key, out);
 		out.push_back({ shared_str("scope_status"), shared_str("1") });
 	}
 

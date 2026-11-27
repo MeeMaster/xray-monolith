@@ -40,6 +40,12 @@
 --   run_string mw_ir.offline()        5a fit and remove on offline server entities (made on another level).
 --   run_string mw_ir.upgrade_keep()   5a a mechanic upgrade keeps the rounds and parts (a fresh AK in your inventory).
 --   run_string mw_ir.roles()          5b-1 part roles, the active sight, and vanilla scope exclusivity.
+--   run_string mw_ir.sights()         5b-2 sight parts as a built-in scope (gun in hands, idle, not aiming).
+--   run_string mw_ir.muzzles()        5b-3 silencer and brake parts (a fresh AK, released afterwards).
+--   run_string mw_ir.launchers()      5b-4 launcher parts on an AK and, refused, on a PM.
+--   run_string mw_ir.aim()            5c part_aim_* aim offsets (gun in hands, first person).
+--   run_string mw_ir.devices()        5d light, laser and battery parts, the toggle and power.
+--   run_string mw_ir.all()            every suite that runs on its own, in a row, with a summary at the end.
 --   run_string mw_ir.moves()          after parts(): 4d placement-only moves and place_parts hooks (moves_clear()).
 --   run_string mw_ir.hooks()          after parts(): script hooks on the test parts (bone visibility by view,
 --                                     part transforms, a light on part A). hooks_clear() detaches the light.
@@ -94,14 +100,19 @@ local function begin()
 	fails, passes = 0, 0
 end
 
+-- all(): the running chain, told when a suite finishes
+local RUN_ALL
+
 local function finish(name)
 	say(string.format("%s: %d passed, %d failed", name, passes, fails))
+	if RUN_ALL and RUN_ALL.done then RUN_ALL.done(name) end
 end
 
 local function gun()
 	local w = db.actor and db.actor:active_item()
 	if not (w and IsWeapon(w)) then
 		say("take a gun in your hands first")
+		if RUN_ALL and RUN_ALL.skip then RUN_ALL.skip("no gun in hands: active item " .. tostring(w and w:section())) end
 		return
 	end
 	return w
@@ -1835,8 +1846,11 @@ function sights()
 		wait_for("sights_b", id, function(g2) return math.abs(scope_factor(g2) - f4) > 0.0001 end,
 			"the gun reloads with the switched sight", function(g2)
 			local fr = scope_factor(g2)
-			check(math.abs(fr / f4 - ref_factor / 4) < 0.01,
-				string.format("the zoom factors follow the sights: %s / %s = %s / 4", tostring(fr), tostring(f4), tostring(ref_factor)))
+			-- a scope with a texture is divided by the scope_factor console value (vanilla), the 4x sight has none
+			local sf = get_console():get_float("scope_factor")
+			local want = ref_factor * f4 / 4
+			check(math.abs(fr - want) < 0.01 or (sf and sf > 0 and math.abs(fr - want / sf) < 0.01),
+				string.format("the zoom factor follows the switched sight: %s (sight %s, scope_factor %s)", tostring(fr), tostring(ref_factor), tostring(sf)))
 
 			-- Without sights the gun is as before
 			clear_sight_parts(g2)
@@ -1848,4 +1862,365 @@ function sights()
 			end)
 		end)
 	end)
+end
+
+---------------------------------------------------------------------------
+-- Shared helpers for the 5b-3 to 5d suites
+---------------------------------------------------------------------------
+
+-- Spawns a section into the actor's backpack and runs then_do(obj) once it is online
+local function spawn_online(section, name, then_do)
+	local id = alife_create_item(section, db.actor).id
+	local tries = 0
+	CreateTimeEvent("mw_ir", name, 0.2, function()
+		tries = tries + 1
+		local o = level.object_by_id(id)
+		if o then
+			then_do(o)
+			return true
+		end
+		if tries > 50 then
+			check(false, "[" .. section .. "] came online")
+			finish(name)
+			return true
+		end
+		ResetTimeEvent("mw_ir", name, 0.2)
+		return false
+	end)
+	return id
+end
+
+-- Runs then_do(obj) once cond(obj) holds; on a timeout fails what, runs on_fail and finishes suite
+local function await(event, id, cond, what, then_do, suite, on_fail)
+	local tries = 0
+	CreateTimeEvent("mw_ir", event, 0.2, function()
+		tries = tries + 1
+		local o = level.object_by_id(id)
+		if o and cond(o) then
+			then_do(o)
+			return true
+		end
+		if not o or tries > 75 then
+			check(false, what .. " (timed out)")
+			if on_fail then on_fail(o) end
+			finish(suite)
+			return true
+		end
+		ResetTimeEvent("mw_ir", event, 0.2)
+		return false
+	end)
+end
+
+local function remove_at(w, mounts)
+	for _, p in pairs(w:get_parts()) do
+		for _, m in ipairs(mounts) do
+			if p.mount == m and p.parent == 0 then w:record_remove_part(p.id) end
+		end
+	end
+end
+
+local function sec(w, key) return ini_sys:r_string_ex(w:instance_section(), key) end
+local function secn(w, key) return ini_sys:r_float_ex(w:instance_section(), key) end
+
+---------------------------------------------------------------------------
+-- muzzles(): 5b-3 on a fresh wpn_ak74 in your backpack. A silencer part makes it a built-in-silencer gun
+-- (silencer_status = 1, koefs from the part), a brake on the silencer adds its muzzle_keys, and without them
+-- the gun is as before. The AK is released afterwards.
+---------------------------------------------------------------------------
+
+local MUZZLE_MOUNTS = { "mw_muzzle" }
+
+function muzzles()
+	begin()
+	if not check(ini_sys:section_exist("mw_pt_muzzle_sil"), "the muzzle test parts exist") then return finish("muzzles") end
+	spawn_online("wpn_ak74", "muzzles", function(w)
+		local id = w:id()
+		local base_status = w:weapon_silencer_status()
+		local base_disp = ini_sys:r_float_ex(w:section(), "fire_dispersion_base")
+		local function done()
+			alife_release_id(id)
+			finish("muzzles")
+		end
+		check(base_status == 2 and not w:weapon_is_silencer(), "the test AK takes an attachable silencer and has none: status " .. tostring(base_status))
+
+		local s = w:fit_part("mw_pt_muzzle_sil", 0, "mw_muzzle")
+		check(secn(w, "silencer_status") == 1 and sec(w, "silencer_koef_section") == "mw_pt_muzzle_sil",
+			"a silencer part writes silencer_status = 1 and its koef section")
+		local b = w:fit_part("mw_pt_muzzle_brake", s, "mw_brake")
+		check(math.abs((secn(w, "fire_dispersion_base") or 0) - 0.33) < 0.0001, "the brake's muzzle_keys reach the section: fire_dispersion_base " .. tostring(secn(w, "fire_dispersion_base")))
+		check(secn(w, "silencer_status") == 1, "the brake (no silencer) keeps the silencer's status")
+		local r = w:get_roles()
+		check(#r.muzzle == 2, "two muzzle parts: " .. #r.muzzle)
+
+		await("muzzles_a", id, function(g) return g:weapon_silencer_status() == 1 end, "the AK reloads with a built-in silencer", function(g)
+			check(g:weapon_is_silencer(), "weapon_is_silencer() with the silencer part")
+			remove_at(g, MUZZLE_MOUNTS)
+			check(secn(g, "silencer_status") == base_status, "without muzzle parts the section's silencer_status is the base one")
+			await("muzzles_b", id, function(g2) return g2:weapon_silencer_status() == base_status end, "the AK reloads to its own silencer status", function(g2)
+				check(not g2:weapon_is_silencer(), "and has no silencer")
+				check(ini_sys:r_float_ex(g2:instance_section(), "fire_dispersion_base") == base_disp, "and its own fire_dispersion_base")
+				done()
+			end, "muzzles", function() alife_release_id(id) end)
+		end, "muzzles", function() alife_release_id(id) end)
+	end)
+end
+
+---------------------------------------------------------------------------
+-- launchers(): 5b-4. On a fresh wpn_ak74 (a launcher class with an attachable launcher) a launcher part makes the
+-- launcher built in (grenade_launcher_status = 1, its grenade_vel), and on a fresh wpn_pm (not a launcher class)
+-- it does nothing. Both are released afterwards.
+---------------------------------------------------------------------------
+
+function launchers()
+	begin()
+	if not check(ini_sys:section_exist("mw_pt_launcher_gl"), "the launcher test part exists") then return finish("launchers") end
+	-- a gun of a launcher class whose base takes an attachable launcher
+	local gl_gun
+	for _, s in ipairs({ "wpn_groza", "wpn_groza_nimble", "wpn_ak74", "wpn_aks74", "wpn_abakan", "wpn_ak105", "wpn_ak74m" }) do
+		if not gl_gun and ini_sys:section_exist(s) and ini_sys:r_float_ex(s, "grenade_launcher_status") == 2 then gl_gun = s end
+	end
+	-- none of the usual ones: any launcher-class gun in the config with an attachable launcher
+	if not gl_gun and ini_sys.section_for_each then
+		local classes = { WP_AK74 = true, WP_GROZA = true, W_AK74 = true, W_GROZA = true, W_FN2000 = true, W_WMAGGL = true }
+		ini_sys:section_for_each(function(s)
+			if not gl_gun and string.find(s, "^wpn_") and classes[ini_sys:r_string_ex(s, "class") or ""] and ini_sys:r_float_ex(s, "grenade_launcher_status") == 2
+				and ini_sys:r_string_ex(s, "grenade_launcher_name") then gl_gun = s end
+		end)
+	end
+	if not check(gl_gun ~= nil, "a test gun with an attachable launcher: " .. tostring(gl_gun)) then return finish("launchers") end
+	spawn_online(gl_gun, "launchers", function(w)
+		local id = w:id()
+		local base_status = w:weapon_grenadelauncher_status()
+		if not check(base_status == 2 and not w:weapon_is_grenadelauncher(), "[" .. gl_gun .. "] takes an attachable launcher and has none: status " .. tostring(base_status)) then
+			alife_release_id(id)
+			return finish("launchers")
+		end
+		w:fit_part("mw_pt_launcher_gl", 0, "mw_launcher")
+		check(secn(w, "grenade_launcher_status") == 1 and secn(w, "grenade_vel") == 77 and sec(w, "launcher_koef_section") == "mw_pt_launcher_gl",
+			"a launcher part on a launcher gun writes status 1, grenade_vel 77 and its koef section")
+		await("launchers_a", id, function(g) return g:weapon_grenadelauncher_status() == 1 end, "the AK reloads with a built-in launcher", function(g)
+			check(g:weapon_is_grenadelauncher(), "weapon_is_grenadelauncher() with the launcher part")
+			remove_at(g, { "mw_launcher" })
+			await("launchers_b", id, function(g2) return g2:weapon_grenadelauncher_status() == base_status end, "the AK reloads to its own launcher status", function(g2)
+				check(not g2:weapon_is_grenadelauncher(), "and has no launcher")
+				alife_release_id(id)
+
+				-- A pistol is not a launcher class: the part does nothing
+				spawn_online("wpn_pm", "launchers", function(p)
+					local pid = p:id()
+					local pm_status = ini_sys:r_float_ex(p:section(), "grenade_launcher_status") or 0
+					p:fit_part("mw_pt_launcher_gl", 0, "mw_launcher")
+					check((secn(p, "grenade_launcher_status") or 0) == pm_status and secn(p, "grenade_vel") ~= 77,
+						"on wpn_pm (not a launcher class) the launcher part writes nothing")
+					check(p:has_part_role("launcher"), "the part is still fitted, with its role")
+					alife_release_id(pid)
+					finish("launchers")
+				end)
+			end, "launchers", function() alife_release_id(id) end)
+		end, "launchers", function() alife_release_id(id) end)
+	end)
+end
+
+---------------------------------------------------------------------------
+-- aim(): 5c on the gun in your hands (first person). part_aim_delta_pos moves the aim, part_aim_pos replaces
+-- it, a sight part's part_aim_* reach the section, and without them the HUD's own aim is back.
+---------------------------------------------------------------------------
+
+local function vnear(a, b) return a and b and math.abs(a.x - b.x) < 0.0001 and math.abs(a.y - b.y) < 0.0001 and math.abs(a.z - b.z) < 0.0001 end
+local function vstr(v) return v and string.format("%.4f, %.4f, %.4f", v.x, v.y, v.z) or "nil" end
+
+function aim()
+	local w = gun()
+	if not w then return end
+	begin()
+	local base = w:get_hud_aim_offset(false)
+	if not check(base ~= nil, "the gun has a HUD (hold it in first person)") then return finish("aim") end
+	local id = w:id()
+	local b = vector():set(base.pos.x, base.pos.y, base.pos.z)
+	say("aim offset " .. vstr(b))
+	local function cleanup(g)
+		if not g then return end
+		g:set_override("part_aim_delta_pos", nil)
+		g:set_override("part_aim_pos", nil)
+		remove_at(g, { "mw_aim_sight" })
+	end
+
+	w:set_override("part_aim_delta_pos", "0, 0.01, 0")
+	local want = vector():set(b.x, b.y + 0.01, b.z)
+	await("aim_a", id, function(g) return vnear(g:get_hud_aim_offset(false).pos, want) end, "part_aim_delta_pos moves the aim by 0.01 up", function(g)
+		check(true, "the aim moved to " .. vstr(g:get_hud_aim_offset(false).pos))
+		g:set_override("part_aim_pos", "0.1, 0.2, 0.3")
+		local abs = vector():set(0.1, 0.21, 0.3)
+		await("aim_b", id, function(g2) return vnear(g2:get_hud_aim_offset(false).pos, abs) end, "part_aim_pos replaces the aim, the delta adds to it", function(g2)
+			check(true, "the aim is " .. vstr(g2:get_hud_aim_offset(false).pos))
+			g2:set_override("part_aim_delta_pos", nil)
+			g2:set_override("part_aim_pos", nil)
+			g2:fit_part("mw_pt_sight_aim", 0, "mw_aim_sight")
+			check(sec(g2, "part_aim_delta_pos") ~= nil, "a sight part's part_aim_delta_pos reaches the section: " .. tostring(sec(g2, "part_aim_delta_pos")))
+			local low = vector():set(b.x, b.y - 0.02, b.z)
+			await("aim_c", id, function(g3) return vnear(g3:get_hud_aim_offset(false).pos, low) end, "the sight's delta moves the aim 0.02 down", function(g3)
+				remove_at(g3, { "mw_aim_sight" })
+				await("aim_d", id, function(g4) return vnear(g4:get_hud_aim_offset(false).pos, b) end, "without them the HUD's own aim is back", function(g4)
+					check(true, "the aim is back at " .. vstr(b))
+					finish("aim")
+				end, "aim", cleanup)
+			end, "aim", cleanup)
+		end, "aim", cleanup)
+	end, "aim", cleanup)
+end
+
+---------------------------------------------------------------------------
+-- devices(): 5d on the gun in your hands. A flashlight that needs power, a laser that doesn't, a battery: the
+-- toggle, single switches, power from the battery and its drain, the wpn_part_power switch, script_light, and
+-- the script callbacks. Removes what it added.
+---------------------------------------------------------------------------
+
+local function part_cond(w, id)
+	for _, p in pairs(w:get_parts()) do
+		if p.id == id then return p.condition end
+	end
+end
+
+function devices()
+	local w = gun()
+	if not w then return end
+	begin()
+	if not check(ini_sys:section_exist("mw_pt_flashlight"), "the device test parts exist") then return finish("devices") end
+	remove_at(w, { "mw_dev_light", "mw_dev_laser" })
+	local id = w:id()
+	local power_was = get_console():get_integer("wpn_part_power")
+	get_console():execute("wpn_part_power 1")
+	local light = w:fit_part("mw_pt_flashlight", 0, "mw_dev_light")
+	local laser = w:fit_part("mw_pt_laser", 0, "mw_dev_laser")
+	local cell
+	local function cleanup(g)
+		get_console():execute("wpn_part_power " .. tostring(power_was))
+		set_part_light_toggle_callback(nil)
+		set_part_npc_light_rule(nil)
+		if g then remove_at(g, { "mw_dev_light", "mw_dev_laser" }) end
+	end
+
+	check(set_part_light_toggle_callback(function(g) return false end) and set_part_light_toggle_callback(nil), "set_part_light_toggle_callback takes a function and nil")
+	check(set_part_npc_light_rule(function(npc, g) return nil end) and set_part_npc_light_rule(nil), "set_part_npc_light_rule takes a function and nil")
+	check(w:toggle_part_lights() == true, "the toggle switches both on (they were off)")
+	check(w:get_part_prop(light, "on") == "1" and w:get_part_prop(laser, "on") == "1", "on is stored as a part prop")
+
+	await("devices_a", id, function(g) return g:is_part_on(laser) end, "the laser is lit after the toggle", function(g)
+		check(not g:is_part_powered(light) and not g:is_part_on(light), "the flashlight needs power and has no battery: off")
+		get_console():execute("wpn_part_power 0")
+		await("devices_b", id, function(g2) return g2:is_part_on(light) end, "with wpn_part_power 0 the flashlight is lit without a battery", function(g2)
+			get_console():execute("wpn_part_power 1")
+			cell = g2:fit_part("mw_pt_cell", light, "mw_dev_cell")
+			await("devices_c", id, function(g3) return g3:is_part_on(light) and g3:is_part_powered(light) end, "a battery inside powers the flashlight", function(g3)
+				local c0 = part_cond(g3, cell)
+				CreateTimeEvent("mw_ir", "devices_d", 2.5, function()
+					local g4 = level.object_by_id(id)
+					if not g4 then cleanup() finish("devices") return true end
+					local c1 = part_cond(g4, cell)
+					check(c0 and c1 and c1 < c0, string.format("the battery drains while lit: %s -> %s", tostring(c0), tostring(c1)))
+					check(g4:toggle_part_lights() == false, "the toggle switches both off (both were on)")
+					await("devices_e", id, function(g5) return not g5:is_part_on(light) and not g5:is_part_on(laser) end, "both are off", function(g5)
+						local c2 = part_cond(g5, cell)
+						CreateTimeEvent("mw_ir", "devices_f", 1, function()
+							local g6 = level.object_by_id(id)
+							if not g6 then cleanup() finish("devices") return true end
+							check(part_cond(g6, cell) == c2, "an unlit light does not drain")
+							check(g6:set_part_on(laser, true), "set_part_on switches one part")
+							g6:set_part_prop(light, "script_light", "1")
+							await("devices_g", id, function(g7) return g7:is_part_on(laser) end, "the laser alone is lit", function(g7)
+								check(not g7:is_part_on(light), "a script_light part is left to scripts")
+								check(not g7:set_part_on(light, true), "set_part_on refuses a script_light part")
+								cleanup(g7)
+								finish("devices")
+							end, "devices", cleanup)
+							return true
+						end)
+					end, "devices", cleanup)
+					return true
+				end)
+			end, "devices", cleanup)
+		end, "devices", cleanup)
+	end, "devices", cleanup)
+end
+
+---------------------------------------------------------------------------
+-- all(): every suite that runs on its own, one after the other, on the gun in your hands (first person, idle,
+-- not aiming; keep it like that until the summary). Each suite has up to two minutes. The summary is the last
+-- [mw_ir] line, and each suite's lines are above it as usual.
+---------------------------------------------------------------------------
+
+local ALL = {
+	{ "api" }, { "mods" }, { "placement" },
+	{ "parts" }, { "hooks", after = "hooks_clear" }, { "moves", after = "moves_clear" }, { "parts", run = "parts_clear", sync = true },
+	{ "fits" }, { "upgrade_keep" }, { "roles" }, { "sights" }, { "muzzles" }, { "launchers" }, { "aim" }, { "devices" },
+}
+
+function all(from)
+	if not gun() then return end
+	local results, i, total_p, total_f = {}, 0, 0, 0
+	-- all("fits") starts at that suite
+	if from then
+		for k, s in ipairs(ALL) do
+			if s[1] == from and not s.sync then i = k - 1 break end
+		end
+	end
+	local current
+	local function next_suite()
+		i = i + 1
+		local s = ALL[i]
+		if not s then
+			RUN_ALL = nil
+			local bad = {}
+			for _, r in ipairs(results) do
+				printf("[mw_ir] all: %s: %s passed, %s failed%s", r.name, tostring(r.p), tostring(r.f), r.note or "")
+				total_p, total_f = total_p + r.p, total_f + r.f
+				if r.f > 0 or r.note then bad[#bad + 1] = r.name end
+			end
+			say(string.format("all: %d suites, %d passed, %d failed%s", #results, total_p, total_f,
+				#bad > 0 and ("; look at: " .. table.concat(bad, ", ")) or ""))
+			return
+		end
+		if s.sync then
+			-- a cleanup step, not a suite
+			local ok, err = pcall(_G.mw_ir[s.run])
+			if not ok then printf("[mw_ir] all: %s failed: %s", s.run, tostring(err)) end
+			return next_suite()
+		end
+		current = s[1]
+		local token = i
+		say("all: " .. current)
+		CreateTimeEvent("mw_ir", "all_timeout_" .. token, 120, function()
+			if RUN_ALL and RUN_ALL.token == token then
+				printf("[mw_ir] all: %s gave no result in 120 s, going on", current)
+				results[#results + 1] = { name = current, p = passes, f = fails, note = " (no finish in 120 s)" }
+				if s.after then pcall(_G.mw_ir[s.after]) end
+				next_suite()
+			end
+			return true
+		end)
+		RUN_ALL = { token = token, done = function(name)
+			if name ~= current or not RUN_ALL or RUN_ALL.token ~= token then return end
+			RUN_ALL.token = nil
+			RemoveTimeEvent("mw_ir", "all_timeout_" .. token)
+			results[#results + 1] = { name = name, p = passes, f = fails }
+			if s.after then
+				local ok, err = pcall(_G.mw_ir[s.after])
+				if not ok then printf("[mw_ir] all: %s failed: %s", s.after, tostring(err)) end
+			end
+			-- the next suite starts on a fresh frame, after this one's last checks
+			CreateTimeEvent("mw_ir", "all_next_" .. token, 0.5, function() next_suite() return true end)
+		end, skip = function(why)
+			if not RUN_ALL or RUN_ALL.token ~= token then return end
+			RUN_ALL.token = nil
+			RemoveTimeEvent("mw_ir", "all_timeout_" .. token)
+			results[#results + 1] = { name = current, p = passes, f = fails, note = " (skipped: " .. why .. ")" }
+			CreateTimeEvent("mw_ir", "all_next_" .. token, 0.5, function() next_suite() return true end)
+		end }
+		local ok, err = pcall(_G.mw_ir[current])
+		if not ok then
+			check(false, current .. " raised: " .. tostring(err))
+			RUN_ALL.done(current)
+		end
+	end
+	next_suite()
 end

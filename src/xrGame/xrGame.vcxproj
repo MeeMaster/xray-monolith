@@ -1257,6 +1257,7 @@
     <ClInclude Include="stat_mods.h" />
     <ClInclude Include="weapon_parts.h" />
     <ClInclude Include="weapon_part_tree.h" />
+    <ClInclude Include="weapon_part_devices.h" />
     <ClInclude Include="part_items.h" />
     <ClInclude Include="instance_record_script.h" />
     <ClInclude Include="inventory_item_impl.h" />
@@ -3047,6 +3048,7 @@
     <ClCompile Include="stat_mods.cpp" />
     <ClCompile Include="weapon_parts.cpp" />
     <ClCompile Include="weapon_part_tree.cpp" />
+    <ClCompile Include="weapon_part_devices.cpp" />
     <ClCompile Include="part_items.cpp" />
     <ClCompile Include="instance_record_script.cpp">
       <PrecompiledHeaderFile>pch_script.h</PrecompiledHeaderFile>
