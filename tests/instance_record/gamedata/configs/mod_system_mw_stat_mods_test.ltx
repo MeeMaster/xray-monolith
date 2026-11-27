@@ -1,0 +1,29 @@
+; Test data for mw_ir.mods() and mw_ir.mods_upgrades() (WEAPON_ENGINE_PLAN.md 6.3, change 3d).
+; Gives two AK-74 upgrades stacked rpm modifiers. Remove this file when you are done testing.
+
+; A test part: record_add_part(0, "mw_sm_mount", "mw_sm_part_a")
+[mw_sm_part_a]
+stat_mods = mw_sm_part_a_mods
+
+[mw_sm_part_a_mods]
+rpm = 0.1, pct
+
+![up_sect_firsta_ak74]
+stat_mods = mw_sm_up_firsta
+
+![up_sect_secona_ak74]
+stat_mods = mw_sm_up_secona
+
+[mw_sm_up_firsta]
+rpm = 0.1, pct
+
+[mw_sm_up_secona]
+rpm = -0.05, pct
+
+; Test data for upgrade_fix_test (WEAPON_OBJECTS.md bugs 1 and 4). Only the keys under test.
+[mw_up_test_crit]
+hit_power_critical = 1.5, 1.4, 1.3, 1.2
+
+[mw_up_test_scopes]
+scope_status = 2
+scopes_sect = mw_up_test_scope_a, mw_up_test_scope_b

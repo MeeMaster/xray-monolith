@@ -1254,6 +1254,7 @@
     <ClInclude Include="InventoryOwner.h" />
     <ClInclude Include="inventory_item.h" />
     <ClInclude Include="instance_section.h" />
+    <ClInclude Include="stat_mods.h" />
     <ClInclude Include="instance_record_script.h" />
     <ClInclude Include="inventory_item_impl.h" />
     <ClInclude Include="inventory_item_inline.h" />
@@ -3040,6 +3041,7 @@
       <PrecompiledHeaderOutputFile>$(IntDir)$(ProjectName)_script.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
     <ClCompile Include="instance_section.cpp" />
+    <ClCompile Include="stat_mods.cpp" />
     <ClCompile Include="instance_record_script.cpp">
       <PrecompiledHeaderFile>pch_script.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)$(ProjectName)_script.pch</PrecompiledHeaderOutputFile>

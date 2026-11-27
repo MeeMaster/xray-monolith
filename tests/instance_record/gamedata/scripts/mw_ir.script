@@ -15,7 +15,19 @@
 --   run_string mw_ir.snapshot("a")  writes every non-empty record in the game to
 --                                   appdata\mw_ir_a.txt; snapshot("b") after a save/load, then
 --   run_string mw_ir.compare("a", "b")  reports any record that changed
---   run_string mw_ir.cleanup()      clears the marked gun's overrides and parts
+--   run_string mw_ir.cleanup()      clears the marked gun's overrides, parts and modifier
+--
+-- Stacked modifiers (3d, WEAPON_ENGINE_PLAN.md 6.3). Needs configs\misc\stat_mods.ltx and
+-- configs\mod_system_mw_stat_mods_test.ltx from this folder (install.ps1 copies them).
+--   run_string mw_ir.mods()           on the gun in your hands: script and part modifiers, the formula, list
+--                                     keys, clamps, the pct floor, missing keys; removes what it added
+--   run_string mw_ir.mods_spawn()     puts two wpn_ak74 into your backpack for mods_upgrades()
+--   run_string mw_ir.mods_upgrades()  installs two test upgrades on them in opposite orders and checks
+--                                     both give base rpm x 1.05; run it again after a save/load
+--   run_string mw_ir.mods_outfit()    adds a modifier to your outfit's burn_protection; run it
+--                                     again after a save/load to check it survived
+-- prepare() also gives the marked gun a script modifier, rpm +25% over its rpm = 120 override, so
+-- verify() expects rpm = 150 in the generated section.
 --
 -- Every result goes to the log as "[mw_ir] PASS ..." or "[mw_ir] FAIL ...".
 
@@ -23,6 +35,9 @@ local MARK = "mw_ir_mark"
 local OVR = { rpm = "120", [MARK] = "1" }
 -- 3c: a state value; it must survive everything the config values do and never reach the generated section
 local STATE_KEY, STATE_VALUE = "mw_ir_charge", "0.75"
+-- 3d: a script modifier stacking on the rpm override: 120 x 1.25
+local MOD = { source = "mw_ir:test", key = "rpm", value = 0.25, mode = "pct" }
+local RPM_FINAL = 150
 
 -- The part tree prepare() builds; paths are what get_parts() must report
 local PARTS = {
@@ -250,11 +265,13 @@ function prepare()
 		if p.parent == 0 then w:record_remove_part(p.id) end
 	end
 	for k in pairs(w:get_overrides()) do w:clear_override(k) end
+	w:remove_modifier(MOD.source)
 
 	for k, v in pairs(OVR) do
 		check(w:set_override(k, v), "set " .. k .. " = " .. v)
 	end
 	check(w:set_override(STATE_KEY, STATE_VALUE, false), "set state value " .. STATE_KEY .. " = " .. STATE_VALUE)
+	check(w:add_modifier(MOD.source, MOD.key, MOD.value, MOD.mode), "add modifier " .. MOD.key .. " +25% from " .. MOD.source)
 	local ids = {}
 	for _, p in ipairs(PARTS) do
 		local parent = p.parent and ids[p.parent] or 0
@@ -265,7 +282,18 @@ function prepare()
 	say(string.format("marked %s [%d]. Its rpm override applies after a save/load. Run verify() any time.", w:section(), w:id()))
 end
 
-local function verify_record(get_override, get_parts, where, is_state)
+local function has_mod(mods, source, key, mode, value)
+	for _, m in ipairs(mods) do
+		if m.source == source and m.key == key and m.mode == mode and near(m.value, value) then
+			return true
+		end
+	end
+	return false
+end
+
+local function verify_record(get_override, get_parts, where, is_state, get_modifiers)
+	check(has_mod(get_modifiers(), MOD.source, MOD.key, MOD.mode, MOD.value),
+		where .. ": modifier " .. MOD.source .. " " .. MOD.key .. " " .. MOD.mode .. " " .. MOD.value)
 	for k, v in pairs(OVR) do
 		check(get_override(k) == v, where .. ": override " .. k .. " = " .. tostring(get_override(k)))
 	end
@@ -308,17 +336,21 @@ function verify()
 
 	check(not string.find(se:section_name(), "_i%d+$"), "server section is the base: " .. se:section_name())
 	verify_record(function(k) return se:get_override(k) end, function() return se:get_parts() end, "server",
-		function(k) return se:is_state_override(k) end)
+		function(k) return se:is_state_override(k) end, function() return se:get_modifiers() end)
 
 	local offline = se:get_override("mw_ir_offline")
 	if obj then
 		check(obj:section() == se:section_name(), "section() is the base: " .. obj:section())
 		local inst = obj:instance_section()
 		check(inst == se:section_name() .. "_i" .. id, "instance_section() is the generated section: " .. inst)
-		check(ini_sys:r_float_ex(inst, "rpm") == 120, "generated section reads rpm = 120")
-		check(ini_sys:r_float_ex(se:section_name(), "rpm") ~= 120, "base section keeps its own rpm")
+		check(near(ini_sys:r_float_ex(inst, "rpm"), RPM_FINAL),
+			"generated section reads rpm = " .. RPM_FINAL .. " (override 120, modifier +25%): " .. tostring(ini_sys:r_string_ex(inst, "rpm")))
+		check(ini_sys:r_float_ex(se:section_name(), "rpm") ~= RPM_FINAL, "base section keeps its own rpm")
+		local e = obj:explain_stat("rpm")
+		check(e.base == "120" and near(tonumber(e.final) or 0, RPM_FINAL) and e.modified,
+			"explain_stat: base " .. tostring(e.base) .. ", final " .. tostring(e.final))
 		verify_record(function(k) return obj:get_override(k) end, function() return obj:get_parts() end, "game",
-			function(k) return obj:is_state_override(k) end)
+			function(k) return obj:is_state_override(k) end, function() return obj:get_modifiers() end)
 		check(not ini_sys:line_exist(inst, STATE_KEY), "the state value is not in the generated section")
 		if offline then
 			check(obj:get_override("mw_ir_offline") == offline, "offline edit reached the game side")
@@ -370,6 +402,7 @@ function cleanup()
 		if p.parent == 0 then se:record_remove_part(p.id) end
 	end
 	for k in pairs(se:get_overrides()) do se:clear_override(k) end
+	se:remove_modifier(MOD.source)
 	say(string.format("cleared gun [%d]; record is %d bytes", se.id, se:record_size()))
 end
 
@@ -402,6 +435,9 @@ local function describe(se, size)
 		out[#out + 1] = string.format(" p %s id=%d parent=%d pos=%.4f sect=%s cond=%.3f paint=%s upg=%s props=%s data=%d",
 			path, p.id, p.parent, p.pos, p.section, p.condition, p.paintjob,
 			table.concat(p.upgrades, ","), table.concat(props, ","), p.data_size)
+	end
+	for _, m in ipairs(se:get_modifiers()) do
+		out[#out + 1] = string.format(" m %s %s %s %.6g", m.source, m.key, m.mode, m.value)
 	end
 	return table.concat(out, "\n")
 end
@@ -460,4 +496,205 @@ function compare(a, b)
 	end
 	check(fails == 0, string.format("%d records in %s, %d in %s", count(ra), a, count(rb), b))
 	finish("compare")
+end
+
+---------------------------------------------------------------------------
+-- mods(): stacked modifiers (3d, WEAPON_ENGINE_PLAN.md 6.3) on the gun in your hands
+---------------------------------------------------------------------------
+
+local RPM_MIN, RPM_MAX = 30, 3000   -- configs\misc\stat_mods.ltx
+local SM = "mw_sm_test:"
+local SM_SOURCES = { "a", "b", "c", "clamp", "floor", "list", "miss", "def", "se" }
+
+local function approx(a, b)
+	return a ~= nil and b ~= nil and math.abs(a - b) <= math.max(0.001, math.abs(b) * 1e-5)
+end
+
+local function nums(s)
+	local t = {}
+	for x in string.gmatch(s or "", "[^,%s]+") do t[#t + 1] = tonumber(x) end
+	return t
+end
+
+local function sources_of(mods, prefix)
+	local t = {}
+	for _, m in ipairs(mods) do
+		if string.sub(m.source, 1, #prefix) == prefix then t[#t + 1] = m end
+	end
+	return t
+end
+
+function mods()
+	local w = gun()
+	if not w then return end
+	begin()
+	local se = alife_object(w:id())
+	local function sect_val(key)
+		local s = w:instance_section()
+		return ini_sys:line_exist(s, key) and ini_sys:r_string_ex(s, key) or nil
+	end
+	for _, s in ipairs(SM_SOURCES) do w:remove_modifier(SM .. s) end
+
+	local e0 = w:explain_stat("rpm")
+	local base = tonumber(e0.base)
+	if not check(base ~= nil, "explain_stat gives a numeric base rpm: " .. tostring(e0.base)) then
+		return finish("mods")
+	end
+	local function expect(e, flat, pct)
+		local p = math.max(e0.pct + pct, -0.9)
+		local v = (base + e0.flat + flat) * (1 + p)
+		return math.min(math.max(v, RPM_MIN), RPM_MAX)
+	end
+
+	-- Two percentages add: +10% and -5% make +5%, in either order
+	check(w:add_modifier(SM .. "b", "rpm", -0.05, "pct") and w:add_modifier(SM .. "a", "rpm", 0.1, "pct"), "add two pct modifiers")
+	local e = w:explain_stat("rpm")
+	check(approx(e.pct - e0.pct, 0.05) and approx(tonumber(e.final), expect(e0, 0, 0.05)),
+		"pct modifiers add: " .. base .. " -> " .. tostring(e.final))
+	check(approx(tonumber(sect_val("rpm")), tonumber(e.final)), "the generated section holds the final value: " .. tostring(sect_val("rpm")))
+	check(#sources_of(w:get_modifiers("rpm"), SM) == 2 and #sources_of(e.sources, SM) == 2, "get_modifiers and explain_stat list both")
+
+	-- A flat and a pct: (base + flat) x (1 + pct)
+	check(w:add_modifier(SM .. "c", "rpm", 50), "add a flat modifier (mode defaults to flat)")
+	e = w:explain_stat("rpm")
+	check(approx(tonumber(e.final), expect(e0, 50, 0.05)), "(base + 50) x 1.05 = " .. tostring(e.final))
+	check(w:add_modifier(SM .. "c", "rpm", 20, "flat") and #sources_of(w:get_modifiers("rpm"), SM .. "c") == 1 and
+		approx(tonumber(w:explain_stat("rpm").final), expect(e0, 20, 0.05)), "adding again with the same source and key replaces it")
+	check(not w:add_modifier(SM .. "x", "rpm", 1, "bogus"), "a bad mode is refused")
+
+	-- Several changes in a frame build the section once
+	w:instance_section()
+	local c0 = w:record_counters()
+	w:remove_modifier(SM .. "a")
+	w:remove_modifier(SM .. "b")
+	w:remove_modifier(SM .. "c", "rpm")
+	check(approx(tonumber(sect_val("rpm")), expect(e0, 0, 0)), "removing every source restores the value: " .. tostring(sect_val("rpm")))
+	check(w:record_counters().builds - c0.builds == 1, "three removals build the section once")
+
+	-- Clamp and pct floor
+	check(w:add_modifier(SM .. "clamp", "rpm", 100000), "add a huge flat modifier")
+	e = w:explain_stat("rpm")
+	check(e.clamped and approx(tonumber(e.final), RPM_MAX), "clamped to the limits table: " .. tostring(e.final))
+	w:remove_modifier(SM .. "clamp")
+	check(w:add_modifier(SM .. "floor", "rpm", -5, "pct"), "add a -500% modifier")
+	e = w:explain_stat("rpm")
+	check(approx(e.pct_used, -0.9) and approx(tonumber(e.final), expect(e0, 0, -5)), "the pct floor holds it at -90%: " .. tostring(e.final))
+	w:remove_modifier(SM .. "floor")
+
+	-- A list key changes every element
+	local hp = sect_val("hit_power")
+	local hp0 = nums(hp)
+	if #hp0 > 1 then
+		check(w:add_modifier(SM .. "list", "hit_power", 0.1, "pct"), "add a pct modifier to the list key hit_power")
+		local hp1 = nums(sect_val("hit_power"))
+		local ok = #hp1 == #hp0
+		for i = 1, #hp0 do ok = ok and approx(hp1[i], hp0[i] * 1.1) end
+		check(ok, "every element changes: " .. tostring(hp) .. " -> " .. tostring(sect_val("hit_power")))
+		w:remove_modifier(SM .. "list")
+		check(sect_val("hit_power") == hp or approx(nums(sect_val("hit_power"))[1], hp0[1]), "and comes back")
+	else
+		say("hit_power is not a list on this gun; list check skipped")
+	end
+
+	-- Missing keys: skipped without a default, the limits default with one
+	check(w:add_modifier(SM .. "miss", "mw_sm_nokey", 1), "add a modifier to a key the section lacks")
+	e = w:explain_stat("mw_sm_nokey")
+	check(not e.modified and e.error ~= nil and sect_val("mw_sm_nokey") == nil, "it is skipped: " .. tostring(e.error))
+	check(w:add_modifier(SM .. "def", "mw_sm_default", 2), "add a modifier to a key with a limits default")
+	e = w:explain_stat("mw_sm_default")
+	check(e.base_is_default and sect_val("mw_sm_default") == "7", "default 5 + 2 = " .. tostring(sect_val("mw_sm_default")))
+	w:remove_modifier(SM .. "miss")
+	w:remove_modifier(SM .. "def")
+
+	-- A part with stat_mods
+	local id = w:record_add_part(0, "mw_sm_mount", "mw_sm_part_a")
+	check(id > 0 and #sources_of(w:get_modifiers("rpm"), "part:" .. id) == 1, "a fitted part contributes as part:" .. id)
+	check(approx(tonumber(sect_val("rpm")), expect(e0, 0, 0.1)), "part rpm +10%: " .. tostring(sect_val("rpm")))
+	w:record_remove_part(id)
+	check(approx(tonumber(sect_val("rpm")), expect(e0, 0, 0)), "removing the part restores it: " .. tostring(sect_val("rpm")))
+
+	-- Through the server object
+	if se then
+		check(se:add_modifier(SM .. "se", "rpm", 0.2, "pct") and #sources_of(w:get_modifiers("rpm"), SM .. "se") == 1,
+			"server-side add_modifier on an online item reaches the game object")
+		check(#sources_of(se:get_modifiers(), SM .. "se") == 1 and approx(tonumber(se:explain_stat("rpm").final), expect(e0, 0, 0.2)),
+			"server object lists and explains it")
+		check(se:remove_modifier(SM .. "se") == 1, "server-side remove_modifier")
+	end
+
+	check(#sources_of(w:get_modifiers(), SM) == 0 and approx(tonumber(sect_val("rpm") or e0.final), tonumber(e0.final)), "clean up")
+	finish("mods")
+	say("mods: a ReloadConfig of the gun follows in the log ([reload config]) once it is idle")
+end
+
+-- Two AK-74s with the test upgrades installed in opposite orders (mod_system_mw_stat_mods_test.ltx)
+local UPGRADES = { "up_firsta_ak74", "up_secona_ak74" }
+
+local function upgrade_guns()
+	local guns = {}
+	db.actor:iterate_inventory(function(_, item)
+		if item:section() == "wpn_ak74" then guns[#guns + 1] = item end
+	end)
+	table.sort(guns, function(a, b) return a:id() < b:id() end)
+	return guns
+end
+
+function mods_spawn()
+	for _ = 1, 2 do alife_create_item("wpn_ak74", db.actor) end
+	say("two wpn_ak74 put in your backpack; run mods_upgrades()")
+end
+
+function mods_upgrades()
+	begin()
+	local guns = upgrade_guns()
+	if not check(#guns >= 2, "two wpn_ak74 in your inventory (mods_spawn())") then return finish("mods_upgrades") end
+	local finals = {}
+	for i = 1, 2 do
+		local w = guns[#guns - 2 + i]
+		local order = i == 1 and { UPGRADES[1], UPGRADES[2] } or { UPGRADES[2], UPGRADES[1] }
+		local fresh = not w:has_upgrade(UPGRADES[1]) and not w:has_upgrade(UPGRADES[2])
+		for _, u in ipairs(order) do
+			if not w:has_upgrade(u) then
+				-- Anomaly refuses upgrades away from a mechanic unless forced, as ui_workshop does
+				inventory_upgrades.force_upgrade = true
+				local ok = w:install_upgrade(u)
+				inventory_upgrades.force_upgrade = false
+				check(ok, string.format("[%d] install %s", w:id(), u))
+			end
+		end
+		local e = w:explain_stat("rpm")
+		local ups = sources_of(e.sources, "upgrade:")
+		check(#ups == 2, string.format("[%d] %d upgrade contributions", w:id(), #ups))
+		local expected = tonumber(e.base) * 1.05
+		check(approx(tonumber(e.final), expected), string.format("[%d] rpm %s x 1.05 = %s (%s)", w:id(), e.base, tostring(e.final),
+			fresh and "installed now" or "after a reload"))
+		local inst = w:instance_section()
+		check(approx(ini_sys:r_float_ex(inst, "rpm"), expected), string.format("[%d] [%s] holds it", w:id(), inst))
+		finals[i] = e.final
+	end
+	check(finals[1] == finals[2], "both install orders give the same rpm: " .. tostring(finals[1]) .. ", " .. tostring(finals[2]))
+	finish("mods_upgrades")
+end
+
+-- A modifier on the worn outfit; the second run (after a save/load) checks it survived
+function mods_outfit()
+	begin()
+	local o = db.actor:item_in_slot(7)
+	if not check(o ~= nil, "wearing an outfit") then return finish("mods_outfit") end
+	local had = has_mod(o:get_modifiers("burn_protection"), "mw_ir:outfit", "burn_protection", "pct", 0.1)
+	if not had then
+		check(o:add_modifier("mw_ir:outfit", "burn_protection", 0.1, "pct"), "add burn_protection +10% to " .. o:section())
+	end
+	local e = o:explain_stat("burn_protection")
+	local inst = o:instance_section()
+	check(e.modified and approx(ini_sys:r_float_ex(inst, "burn_protection"), tonumber(e.final)),
+		string.format("[%s] burn_protection %s -> %s%s", inst, tostring(e.base), tostring(e.final), e.clamped and " (clamped)" or ""))
+	finish("mods_outfit")
+	say(had and "the outfit modifier survived; run_string mw_ir.mods_outfit_clear() removes it"
+		or "save, load and run mods_outfit() again")
+end
+
+function mods_outfit_clear()
+	local o = db.actor:item_in_slot(7)
+	say(o and string.format("removed %d", o:remove_modifier("mw_ir:outfit")) or "no outfit")
 end

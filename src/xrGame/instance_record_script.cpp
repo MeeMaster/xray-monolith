@@ -13,6 +13,7 @@
 #include "Level.h"
 #include "ai_space.h"
 #include "script_engine.h"
+#include "stat_mods.h"
 
 namespace
 {
@@ -130,6 +131,81 @@ namespace
 		default: return false;
 		}
 	}
+
+	// ---- 3d: stacked modifiers --------------------------------------------
+
+	// "flat" or "pct"; anything else is refused with a log line
+	bool modifier_mode(LPCSTR mode, u8& out)
+	{
+		if (!mode || !xr_strcmp(mode, "flat"))
+			out = SInstanceModifier::FLAT;
+		else if (!xr_strcmp(mode, "pct"))
+			out = SInstanceModifier::PCT;
+		else
+		{
+			Msg("! [stat mods] modifier mode must be \"flat\" or \"pct\", not \"%s\"", mode);
+			return false;
+		}
+		return true;
+	}
+
+	LPCSTR mode_name(u8 mode)
+	{
+		return mode == SInstanceModifier::PCT ? "pct" : "flat";
+	}
+
+	::luabind::object contribution(lua_State* L, const stat_mods::SContribution& c)
+	{
+		::luabind::object m = ::luabind::newtable(L);
+		m["source"] = c.source.c_str();
+		m["key"] = c.key.c_str();
+		m["mode"] = mode_name(c.mode);
+		m["value"] = c.value;
+		return m;
+	}
+
+	// Every contribution, upgrades and parts included: {{source, key, mode, value}, ...}
+	::luabind::object get_modifiers(lua_State* L, const CSE_InstanceRecord& r, const xr_vector<shared_str>& upgrades, LPCSTR key)
+	{
+		stat_mods::Contributions all;
+		stat_mods::collect(r, &upgrades, all);
+		::luabind::object t = ::luabind::newtable(L);
+		int i = 1;
+		for (const stat_mods::SContribution& c : all)
+			if (!key || !xr_strcmp(c.key, key))
+				t[i++] = contribution(L, c);
+		return t;
+	}
+
+	// {base, flat, pct, pct_used, clamped, final, modified, error, sources = {...}}
+	::luabind::object explain_stat(lua_State* L, LPCSTR section, const CSE_InstanceRecord& r, const xr_vector<shared_str>& upgrades,
+	                               LPCSTR key)
+	{
+		::luabind::object t = ::luabind::newtable(L);
+		if (!key || !*key)
+			return t;
+		stat_mods::SExplain e;
+		stat_mods::explain(section, r, &upgrades, key, e);
+		t["base"] = e.base.c_str();
+		t["base_is_default"] = e.base_is_default;
+		t["flat"] = e.flat;
+		t["pct"] = e.pct;
+		t["pct_used"] = e.pct_used;
+		t["clamped"] = e.clamped;
+		t["final"] = e.final_value.c_str();
+		t["modified"] = e.modified;
+		if (!e.error.empty())
+			t["error"] = e.error.c_str();
+		::luabind::object sources = ::luabind::newtable(L);
+		int i = 1;
+		for (const stat_mods::SContribution& c : e.sources)
+			sources[i++] = contribution(L, c);
+		t["sources"] = sources;
+		return t;
+	}
+
+	// The upgrades a server item has: the game object's list while it is online
+	xr_vector<shared_str> server_upgrades(CSE_ALifeInventoryItem* se);
 
 	// "scope", "handguard/bottom"; a part sharing its parent and mount with another
 	// (several parts on one rail) is named "<mount>#<id>" (4.1)
@@ -290,6 +366,51 @@ namespace instance_record_script
 		return item ? item->instance_record().byte_size() : 0;
 	}
 
+	bool go_add_modifier_mode(CScriptGameObject* self, LPCSTR source, LPCSTR key, float value, LPCSTR mode)
+	{
+		CInventoryItem* item = game_item(self);
+		u8 m;
+		return item && modifier_mode(mode, m) &&
+			edit_game(item, [&](CSE_InstanceRecord& r) { return r.add_modifier(source, key, value, m); });
+	}
+
+	bool go_add_modifier(CScriptGameObject* self, LPCSTR source, LPCSTR key, float value)
+	{
+		return go_add_modifier_mode(self, source, key, value, nullptr);
+	}
+
+	u32 go_remove_modifier_key(CScriptGameObject* self, LPCSTR source, LPCSTR key)
+	{
+		CInventoryItem* item = game_item(self);
+		u32 n = 0;
+		if (item)
+			edit_game(item, [&](CSE_InstanceRecord& r) { n = r.remove_modifier(source, key); return n != 0; });
+		return n;
+	}
+
+	u32 go_remove_modifier(CScriptGameObject* self, LPCSTR source)
+	{
+		return go_remove_modifier_key(self, source, nullptr);
+	}
+
+	::luabind::object go_get_modifiers_key(lua_State* L, CScriptGameObject* self, LPCSTR key)
+	{
+		CInventoryItem* item = game_item(self);
+		return item ? get_modifiers(L, item->instance_record(), item->get_upgrades(), key) : ::luabind::newtable(L);
+	}
+
+	::luabind::object go_get_modifiers(lua_State* L, CScriptGameObject* self)
+	{
+		return go_get_modifiers_key(L, self, nullptr);
+	}
+
+	::luabind::object go_explain_stat(lua_State* L, CScriptGameObject* self, LPCSTR key)
+	{
+		CInventoryItem* item = game_item(self);
+		return item ? explain_stat(L, item->object().cNameSect().c_str(), item->instance_record(), item->get_upgrades(), key)
+		            : ::luabind::newtable(L);
+	}
+
 	// ---- server item ----------------------------------------------------
 
 	LPCSTR se_get_override(CSE_ALifeInventoryItem* self, LPCSTR key)
@@ -356,5 +477,54 @@ namespace instance_record_script
 	u32 se_record_size(CSE_ALifeInventoryItem* self)
 	{
 		return self ? server_view(self).byte_size() : 0;
+	}
+
+	bool se_add_modifier_mode(CSE_ALifeInventoryItem* self, LPCSTR source, LPCSTR key, float value, LPCSTR mode)
+	{
+		u8 m;
+		return modifier_mode(mode, m) && edit_server(self, [&](CSE_InstanceRecord& r) { return r.add_modifier(source, key, value, m); });
+	}
+
+	bool se_add_modifier(CSE_ALifeInventoryItem* self, LPCSTR source, LPCSTR key, float value)
+	{
+		return se_add_modifier_mode(self, source, key, value, nullptr);
+	}
+
+	u32 se_remove_modifier_key(CSE_ALifeInventoryItem* self, LPCSTR source, LPCSTR key)
+	{
+		u32 n = 0;
+		edit_server(self, [&](CSE_InstanceRecord& r) { n = r.remove_modifier(source, key); return n != 0; });
+		return n;
+	}
+
+	u32 se_remove_modifier(CSE_ALifeInventoryItem* self, LPCSTR source)
+	{
+		return se_remove_modifier_key(self, source, nullptr);
+	}
+
+	::luabind::object se_get_modifiers_key(lua_State* L, CSE_ALifeInventoryItem* self, LPCSTR key)
+	{
+		return self ? get_modifiers(L, server_view(self), server_upgrades(self), key) : ::luabind::newtable(L);
+	}
+
+	::luabind::object se_get_modifiers(lua_State* L, CSE_ALifeInventoryItem* self)
+	{
+		return se_get_modifiers_key(L, self, nullptr);
+	}
+
+	::luabind::object se_explain_stat(lua_State* L, CSE_ALifeInventoryItem* self, LPCSTR key)
+	{
+		return self ? explain_stat(L, self->base()->s_name.c_str(), server_view(self), server_upgrades(self), key)
+		            : ::luabind::newtable(L);
+	}
+}
+
+namespace
+{
+	xr_vector<shared_str> server_upgrades(CSE_ALifeInventoryItem* se)
+	{
+		if (CInventoryItem* item = online_item(se))
+			return item->get_upgrades();
+		return se->m_upgrades;
 	}
 }

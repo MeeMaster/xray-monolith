@@ -29,6 +29,14 @@ namespace instance_record_script
 	u16 go_add_part_pos(CScriptGameObject* self, u16 parent, LPCSTR mount, LPCSTR section, float pos);
 	u32 go_remove_part(CScriptGameObject* self, u16 id);
 	u32 go_record_size(CScriptGameObject* self);
+	// 3d: stacked modifiers. mode is "flat" (default) or "pct".
+	bool go_add_modifier(CScriptGameObject* self, LPCSTR source, LPCSTR key, float value);
+	bool go_add_modifier_mode(CScriptGameObject* self, LPCSTR source, LPCSTR key, float value, LPCSTR mode);
+	u32 go_remove_modifier(CScriptGameObject* self, LPCSTR source);
+	u32 go_remove_modifier_key(CScriptGameObject* self, LPCSTR source, LPCSTR key);
+	::luabind::object go_get_modifiers(lua_State* L, CScriptGameObject* self);
+	::luabind::object go_get_modifiers_key(lua_State* L, CScriptGameObject* self, LPCSTR key);
+	::luabind::object go_explain_stat(lua_State* L, CScriptGameObject* self, LPCSTR key);
 
 	// Methods of cse_alife_inventory_item. While the item has a game object, edits are
 	// forwarded to it; otherwise they change the server copy, which the next spawn reads.
@@ -44,4 +52,11 @@ namespace instance_record_script
 	u16 se_add_part_pos(CSE_ALifeInventoryItem* self, u16 parent, LPCSTR mount, LPCSTR section, float pos);
 	u32 se_remove_part(CSE_ALifeInventoryItem* self, u16 id);
 	u32 se_record_size(CSE_ALifeInventoryItem* self);
+	bool se_add_modifier(CSE_ALifeInventoryItem* self, LPCSTR source, LPCSTR key, float value);
+	bool se_add_modifier_mode(CSE_ALifeInventoryItem* self, LPCSTR source, LPCSTR key, float value, LPCSTR mode);
+	u32 se_remove_modifier(CSE_ALifeInventoryItem* self, LPCSTR source);
+	u32 se_remove_modifier_key(CSE_ALifeInventoryItem* self, LPCSTR source, LPCSTR key);
+	::luabind::object se_get_modifiers(lua_State* L, CSE_ALifeInventoryItem* self);
+	::luabind::object se_get_modifiers_key(lua_State* L, CSE_ALifeInventoryItem* self, LPCSTR key);
+	::luabind::object se_explain_stat(lua_State* L, CSE_ALifeInventoryItem* self, LPCSTR key);
 }

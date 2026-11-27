@@ -110,7 +110,7 @@ void CLevel::g_sv_Spawn(CSE_Abstract* E)
 	// 2f (WEAPON_ENGINE_PLAN.md 5.2): an item's generated section has to exist before Objects.Create runs Load
 	shared_str load_section;
 	if (CSE_ALifeInventoryItem* item = E->cast_inventory_item())
-		load_section = instance_section::build(*E->s_name, E->ID, item->m_instance);
+		load_section = instance_section::build(*E->s_name, E->ID, item->m_instance, &item->m_upgrades);
 
 	// Client spawn
 	//	T.Start		();

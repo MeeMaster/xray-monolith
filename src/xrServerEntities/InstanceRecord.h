@@ -62,13 +62,31 @@ struct SInstanceRuntime
 	}
 };
 
+// 3d (WEAPON_ENGINE_PLAN.md 6.3): one script contribution to a numeric config key. Upgrade and part
+// contributions are not stored; they are worked out from the upgrades and the parts list.
+struct SInstanceModifier
+{
+	enum : u8 { FLAT = 0, PCT = 1 };
+
+	shared_str source;         // the caller's tag, such as "my_mod:overheat"
+	shared_str key;
+	u8 mode = FLAT;
+	float value = 0.f;
+
+	bool operator==(const SInstanceModifier& o) const
+	{
+		return source == o.source && key == o.key && mode == o.mode && value == o.value;
+	}
+};
+
 class CSE_InstanceRecord
 {
 public:
 	// Format version this build writes. Records with a higher version are kept as raw bytes and
 	// written back unchanged, so a save made by a newer build survives a round trip here.
 	// 1: first format. 2: a flags byte per override (3c); a version 1 record reads every override as config.
-	enum : u8 { VERSION = 2 };
+	// 3: script modifiers (3d); older records have none.
+	enum : u8 { VERSION = 3 };
 
 	// Hard caps, so a record can never push a spawn packet near its 16 KB limit
 	enum : u32
@@ -81,12 +99,15 @@ public:
 		MAX_BLOB = 1024,         // per part
 		MAX_ROUNDS = 1024,
 		MAX_STRING = 255,        // per key, value or name
+		MAX_MODIFIERS = 256,
+		MAX_MODIFIERS_PER_SOURCE = 64,
 	};
 
 	InstanceProps overrides;
 	u16 next_part_id = 1;
 	xr_vector<SInstancePart> parts;
 	SInstanceRuntime runtime;
+	xr_vector<SInstanceModifier> modifiers;   // script modifiers (3d), in the order they were added
 
 	bool empty() const;
 	void clear();
@@ -108,9 +129,15 @@ public:
 	bool clear_override(LPCSTR key);
 	bool is_state_override(LPCSTR key) const;
 	bool has_config_overrides() const;
-	// True when both records give the same generated section: the same config overrides in the same order.
-	// State overrides and everything else are ignored.
+	// True when both records give the same generated section: the same config overrides in the same order, the
+	// same script modifiers, and the same parts that declare stat_mods (3d). State overrides and the rest are ignored.
 	bool same_config(const CSE_InstanceRecord& o) const;
+
+	// Script modifiers (3d). mode is SInstanceModifier::FLAT or PCT. Adding again with the same source and key
+	// replaces the entry. false when a cap, an invalid value or the opaque state forbids it.
+	bool add_modifier(LPCSTR source, LPCSTR key, float value, u8 mode);
+	// Removes the entry for that key, or every entry of the source when key is null; returns the count
+	u32 remove_modifier(LPCSTR source, LPCSTR key = nullptr);
 
 	// Parts
 	SInstancePart* find_part(u16 id);

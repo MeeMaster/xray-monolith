@@ -64,6 +64,13 @@ void CSE_ALifeInventoryItem::script_register(lua_State* L)
 		.def("record_add_part", &instance_record_script::se_add_part_pos)
 		.def("record_remove_part", &instance_record_script::se_remove_part)
 		.def("record_size", &instance_record_script::se_record_size)
+		.def("add_modifier", &instance_record_script::se_add_modifier)
+		.def("add_modifier", &instance_record_script::se_add_modifier_mode)
+		.def("remove_modifier", &instance_record_script::se_remove_modifier)
+		.def("remove_modifier", &instance_record_script::se_remove_modifier_key)
+		.def("get_modifiers", &instance_record_script::se_get_modifiers, raw<1>())
+		.def("get_modifiers", &instance_record_script::se_get_modifiers_key, raw<1>())
+		.def("explain_stat", &instance_record_script::se_explain_stat, raw<1>())
 	];
 }
 

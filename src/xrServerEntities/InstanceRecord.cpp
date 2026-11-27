@@ -6,7 +6,7 @@
 #include "stdafx.h"
 #include "InstanceRecord.h"
 
-// Body layout, version 2 (all integers little endian, strings zero terminated):
+// Body layout, version 3 (all integers little endian, strings zero terminated):
 //   u16 override count, then (key, value, u8 flags) per override; version 1 has no flags byte
 //   u16 next part id
 //   u8  part count, then per part:
@@ -17,6 +17,7 @@
 //       u16 blob size, then the bytes,
 //       string paintjob
 //   u8  runtime present (0/1); if 1: u8 fire mode, u8 gl mode, u16 round count, then u8 per round
+//   u16 modifier count, then (source, key, u8 mode, f32 value) per modifier; versions 1 and 2 stop before it
 // Any change to this layout bumps VERSION.
 
 namespace
@@ -136,7 +137,7 @@ bool SInstancePart::operator==(const SInstancePart& o) const
 
 bool CSE_InstanceRecord::empty() const
 {
-	return !is_opaque() && overrides.empty() && parts.empty() && !runtime.valid && next_part_id == 1;
+	return !is_opaque() && overrides.empty() && parts.empty() && !runtime.valid && next_part_id == 1 && modifiers.empty();
 }
 
 void CSE_InstanceRecord::clear()
@@ -145,13 +146,14 @@ void CSE_InstanceRecord::clear()
 	next_part_id = 1;
 	parts.clear();
 	runtime = SInstanceRuntime();
+	modifiers.clear();
 	m_opaque.clear();
 }
 
 bool CSE_InstanceRecord::operator==(const CSE_InstanceRecord& o) const
 {
 	return overrides == o.overrides && next_part_id == o.next_part_id && parts == o.parts &&
-		runtime == o.runtime && m_opaque == o.m_opaque;
+		runtime == o.runtime && modifiers == o.modifiers && m_opaque == o.m_opaque;
 }
 
 void CSE_InstanceRecord::write_body(xr_vector<u8>& out) const
@@ -188,11 +190,20 @@ void CSE_InstanceRecord::write_body(xr_vector<u8>& out) const
 		if (!runtime.rounds.empty())
 			w.bytes(runtime.rounds.data(), u32(runtime.rounds.size()));
 	}
+	w.u16_(u16(modifiers.size()));
+	for (const SInstanceModifier& m : modifiers)
+	{
+		w.str(m.source);
+		w.str(m.key);
+		w.u8_(m.mode);
+		w.f32_(m.value);
+	}
 }
 
 bool CSE_InstanceRecord::fits() const
 {
-	if (overrides.size() > MAX_OVERRIDES || parts.size() > MAX_PARTS || runtime.rounds.size() > MAX_ROUNDS)
+	if (overrides.size() > MAX_OVERRIDES || parts.size() > MAX_PARTS || runtime.rounds.size() > MAX_ROUNDS ||
+		modifiers.size() > MAX_MODIFIERS)
 		return false;
 	for (const SInstancePart& part : parts)
 		if (part.props.size() > MAX_PROPS || part.upgrades.size() > MAX_UPGRADES || part.blob.size() > MAX_BLOB)
@@ -337,6 +348,23 @@ bool CSE_InstanceRecord::read_body(const u8* data, u32 size, u8 version)
 		}
 	}
 
+	if (version >= 3)
+	{
+		const u16 modifier_count = r.u16_();
+		if (modifier_count > MAX_MODIFIERS) r.fail("too many modifiers");
+		modifiers.reserve(modifier_count);
+		for (u32 i = 0; i < modifier_count && r.ok; ++i)
+		{
+			SInstanceModifier m;
+			m.source = r.str();
+			m.key = r.str();
+			m.mode = r.u8_();
+			m.value = r.f32_();
+			if (r.ok && (m.mode > SInstanceModifier::PCT || !m.source.size() || !m.key.size())) r.fail("bad modifier");
+			if (r.ok) modifiers.push_back(m);
+		}
+	}
+
 	if (r.ok && r.p != r.end)
 		r.fail("unexpected bytes after the body");
 
@@ -426,7 +454,65 @@ bool CSE_InstanceRecord::same_config(const CSE_InstanceRecord& o) const
 		a = next(overrides, a + 1);
 		b = next(o.overrides, b + 1);
 	}
-	return a == overrides.size() && b == o.overrides.size();
+	if (a != overrides.size() || b != o.overrides.size())
+		return false;
+	if (modifiers != o.modifiers)
+		return false;
+
+	// Parts feed the section only through their stat_mods (3d); other part edits change no config value
+	auto stat_parts = [](const xr_vector<SInstancePart>& v) {
+		xr_vector<std::pair<u16, shared_str>> out;
+		for (const SInstancePart& p : v)
+			if (p.section.size() && pSettings->section_exist(p.section) && pSettings->line_exist(p.section, "stat_mods"))
+				out.push_back({ p.id, p.section });
+		return out;
+	};
+	return stat_parts(parts) == stat_parts(o.parts);
+}
+
+bool CSE_InstanceRecord::add_modifier(LPCSTR source, LPCSTR key, float value, u8 mode)
+{
+	if (is_opaque() || !str_ok(source) || !str_ok(key) || !_valid(value) || mode > SInstanceModifier::PCT)
+		return false;
+	u32 from_source = 0;
+	for (SInstanceModifier& m : modifiers)
+	{
+		if (xr_strcmp(m.source, source))
+			continue;
+		if (!xr_strcmp(m.key, key))
+		{
+			m.mode = mode;
+			m.value = value;
+			return true;
+		}
+		++from_source;
+	}
+	if (modifiers.size() >= MAX_MODIFIERS || from_source >= MAX_MODIFIERS_PER_SOURCE)
+		return false;
+	SInstanceModifier m;
+	m.source = source;
+	m.key = key;
+	m.mode = mode;
+	m.value = value;
+	modifiers.push_back(m);
+	if (byte_size() > MAX_BYTES)
+	{
+		modifiers.pop_back();
+		return false;
+	}
+	return true;
+}
+
+u32 CSE_InstanceRecord::remove_modifier(LPCSTR source, LPCSTR key)
+{
+	if (is_opaque() || !source)
+		return 0;
+	const u32 before = u32(modifiers.size());
+	modifiers.erase(std::remove_if(modifiers.begin(), modifiers.end(), [&](const SInstanceModifier& m)
+	{
+		return !xr_strcmp(m.source, source) && (!key || !xr_strcmp(m.key, key));
+	}), modifiers.end());
+	return before - u32(modifiers.size());
 }
 
 SInstancePart* CSE_InstanceRecord::find_part(u16 id)
@@ -664,6 +750,68 @@ bool CSE_InstanceRecord::self_test()
 		Q.write_start();
 		b.write(Q);
 		check(Q.B.count > 0 && Q.B.data[0] == VERSION, "and is written back in the current version");
+	}
+
+	// 8. Script modifiers (3d)
+	{
+		CSE_InstanceRecord a;
+		a.set_override("rpm", "600");
+		check(a.add_modifier("mod:a", "rpm", 0.1f, SInstanceModifier::PCT) && a.add_modifier("mod:a", "hit_power", 2.f, SInstanceModifier::FLAT) &&
+			a.add_modifier("mod:b", "rpm", -0.05f, SInstanceModifier::PCT), "modifiers are added");
+		CSE_InstanceRecord b;
+		P.write_start();
+		a.write(P);
+		const u32 written = P.B.count;
+		P.w_u32(sentinel);
+		P.r_pos = 0;
+		b.read(P);
+		check(b == a && b.modifiers.size() == 3 && P.r_u32() == sentinel && written == a.byte_size(), "modifiers survive a round trip");
+
+		CSE_InstanceRecord c = a;
+		check(c.add_modifier("mod:a", "rpm", 0.2f, SInstanceModifier::PCT) && c.modifiers.size() == 3 && c.modifiers[0].value == 0.2f,
+			"adding with the same source and key replaces the entry");
+		check(!c.same_config(a), "changing a modifier changes the config");
+		check(c.remove_modifier("mod:a", "hit_power") == 1 && c.modifiers.size() == 2, "remove_modifier(source, key) removes one entry");
+		check(c.remove_modifier("mod:a") == 1 && c.remove_modifier("mod:a") == 0 && c.modifiers.size() == 1, "remove_modifier(source) removes the rest");
+		check(!c.add_modifier("mod:x", "rpm", 1.f, 2) && !c.add_modifier("", "rpm", 1.f, 0), "bad mode or empty source is refused");
+
+		CSE_InstanceRecord d;
+		u32 n = 0;
+		string32 k;
+		while (n < MAX_MODIFIERS_PER_SOURCE + 5)
+		{
+			xr_sprintf(k, "key_%u", n);
+			if (!d.add_modifier("one", k, 1.f, 0)) break;
+			++n;
+		}
+		check(n == MAX_MODIFIERS_PER_SOURCE && d.add_modifier("two", "key_0", 1.f, 0), "per-source modifier cap is enforced");
+
+		CSE_InstanceRecord e = a;
+		e.set_override("charge", "1", true);
+		check(e.same_config(a), "a state value next to modifiers keeps the config");
+	}
+
+	// 9. A version 2 record (no modifier block) reads with no modifiers
+	{
+		NET_Packet B;
+		B.write_start();
+		B.w_u16(1);
+		B.w_stringZ("rpm");
+		B.w_stringZ("650");
+		B.w_u8(SInstanceProp::STATE);
+		B.w_u16(1);   // next part id
+		B.w_u8(0);    // parts
+		B.w_u8(0);    // no runtime block
+		P.write_start();
+		P.w_u8(2);
+		P.w_u16(u16(B.B.count));
+		P.w(B.B.data, B.B.count);
+		P.w_u32(sentinel);
+		P.r_pos = 0;
+		CSE_InstanceRecord b;
+		b.read(P);
+		check(!b.is_opaque() && b.is_state_override("rpm") && b.modifiers.empty() && P.r_u32() == sentinel,
+			"version 2 record reads with its state flag and no modifiers");
 	}
 
 	Msg("%s [instance record test] %s", failed ? "!" : "-", failed ? "FAILED" : "all checks passed");

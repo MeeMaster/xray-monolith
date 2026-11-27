@@ -2841,6 +2841,62 @@ public:
 	}
 };
 
+class CCC_UpgradeFixTest : public IConsole_Command
+{
+public:
+	CCC_UpgradeFixTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		if (CWeapon* wpn = rebuild_test_weapon("upgrade_fix_test"))
+			wpn->upgrade_fix_self_test();
+	}
+};
+
+// stat_explain <key> (WEAPON_ENGINE_PLAN.md 6.3, change 3d): the base value of a key on the item in hands, each
+// stacked modifier with its source, and the final value. Also checks it against what Load reads.
+#include "stat_mods.h"
+class CCC_StatExplain : public IConsole_Command
+{
+public:
+	CCC_StatExplain(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		string256 key;
+		key[0] = 0;
+		if (args)
+			sscanf(args, "%255s", key);
+		if (!key[0])
+		{
+			Msg("! [stat_explain] usage: stat_explain <key>");
+			return;
+		}
+		PIItem item = active_item();
+		if (!item)
+		{
+			Msg("! [stat_explain] take an item in your hands first");
+			return;
+		}
+		stat_mods::SExplain e;
+		CInventoryItem::Upgrades_type upgrades = item->get_upgrades();
+		LPCSTR base = item->object().cNameSect().c_str();
+		stat_mods::explain(base, item->instance_record(), &upgrades, key, e);
+		Msg("* [stat_explain] %s [%u] %s: base %s%s", base, item->object_id(), key, e.base.size() ? e.base.c_str() : "(none)",
+			e.base_is_default ? " (limits default)" : "");
+		for (const stat_mods::SContribution& c : e.sources)
+			Msg("*   %-24s %s %+g", c.source.c_str(), c.mode == SInstanceModifier::PCT ? "pct " : "flat", c.value);
+		if (!e.sources.empty())
+			Msg("*   flat %+g, pct %+g%s, %s", e.flat, e.pct,
+				e.pct_used != e.pct ? make_string(" (floored to %+g)", e.pct_used).c_str() : "",
+				e.clamped ? "clamped" : "not clamped");
+		if (e.error.size())
+			Msg("!   skipped: %s", e.error.c_str());
+		const shared_str sect = item->config_section();
+		LPCSTR read = pSettings->line_exist(sect, key) ? pSettings->r_string(sect, key) : nullptr;
+		Msg("*   final %s; [%s] holds %s%s", e.final_value.size() ? e.final_value.c_str() : "(none)", sect.c_str(),
+			read ? read : "(none)", (read && e.final_value == read) || (!read && e.final_value.empty()) ? "" : "  <- MISMATCH");
+	}
+};
+
 void CCC_RegisterCommands()
 {
 	//Not needed for a singleplayer-only mod
@@ -2905,6 +2961,8 @@ void CCC_RegisterCommands()
 	CMD1(CCC_InstanceRecordSet, "instance_record_set");
 	CMD1(CCC_ReloadLoadTest, "reload_load_test");
 	CMD1(CCC_RebuildTest, "rebuild_test");
+	CMD1(CCC_StatExplain, "stat_explain");
+	CMD1(CCC_UpgradeFixTest, "upgrade_fix_test");
 	CMD4(CCC_Float, "wpn_world_shot_motion_dist", &ps_wpn_world_shot_motion_dist, 0.f, 500.f);
 	CMD4(CCC_Integer, "wpn_world_shot_motion_debug", &ps_wpn_world_shot_motion_debug, 0, 1);
 

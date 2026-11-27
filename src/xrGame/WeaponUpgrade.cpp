@@ -177,7 +177,9 @@ bool CWeapon::install_upgrade_hit(LPCSTR section, bool test)
 	result |= result2;
 
 	shared_str s_sHitPowerCritical;
-	result2 = process_if_exists_set(section, "hit_power_critical", &CInifile::r_string_wb, s_sHitPower, test);
+	// WEAPON_OBJECTS.md bug 1: the value was read into s_sHitPower, so the parse below saw an empty string and
+	// set every difficulty to 0
+	result2 = process_if_exists_set(section, "hit_power_critical", &CInifile::r_string_wb, s_sHitPowerCritical, test);
 	if (result2 && !test)
 	{
 		string32 buffer;
@@ -266,11 +268,19 @@ bool CWeapon::install_upgrade_addon(LPCSTR section, bool test)
 				}
 				else if (pSettings->line_exist(section, "scopes_sect"))
 				{
+					// WEAPON_OBJECTS.md bug 4: the list is replaced, as in Load and the modular branch above. It
+					// used to be appended to, duplicating entries. The fitted scope keeps its entry if the new
+					// list has it, so m_cur_scope doesn't drift to another scope.
+					const shared_str current = m_cur_scope < m_scopes.size() ? m_scopes[m_cur_scope] : shared_str();
+					m_scopes.clear();
+					m_cur_scope = 0;
 					LPCSTR str = pSettings->r_string(section, "scopes_sect");
 					for (int i = 0, count = _GetItemCount(str); i < count; ++i)
 					{
 						string128 scope_section;
 						_GetItem(str, i, scope_section);
+						if (current.size() && !xr_strcmp(current, scope_section))
+							m_cur_scope = u8(m_scopes.size());
 						m_scopes.push_back(scope_section);
 					}
 				}
@@ -332,4 +342,61 @@ bool CWeapon::install_upgrade_addon(LPCSTR section, bool test)
 	}
 	result |= result2;
 	return result;
+}
+
+// WEAPON_OBJECTS.md bugs 1 and 4. Calls the two handlers directly with sections that hold only the keys under test,
+// so nothing else changes; the touched fields are saved first and put back at the end.
+bool CWeapon::upgrade_fix_self_test()
+{
+	LPCSTR crit = "mw_up_test_crit";
+	LPCSTR scopes = "mw_up_test_scopes";
+	if (!pSettings->section_exist(crit) || !pSettings->section_exist(scopes))
+	{
+		Msg("! [upgrade fix test] sections [%s] and [%s] are missing; install tests\\instance_record", crit, scopes);
+		return false;
+	}
+
+	u32 failed = 0;
+	auto check = [&](bool ok, LPCSTR what)
+	{
+		Msg("%s [upgrade fix test] %s", ok ? "-" : "!", what);
+		if (!ok) ++failed;
+	};
+	string256 buf;
+
+	// Bug 1: hit_power_critical
+	const Fvector4 crit_before = fvHitPowerCritical;
+	install_upgrade_hit(crit, false);
+	xr_sprintf(buf, "hit_power_critical reads 1.5, 1.4, 1.3, 1.2: %.2f, %.2f, %.2f, %.2f", fvHitPowerCritical[egdMaster],
+		fvHitPowerCritical[egdVeteran], fvHitPowerCritical[egdStalker], fvHitPowerCritical[egdNovice]);
+	check(fsimilar(fvHitPowerCritical[egdMaster], 1.5f) && fsimilar(fvHitPowerCritical[egdVeteran], 1.4f) &&
+		fsimilar(fvHitPowerCritical[egdStalker], 1.3f) && fsimilar(fvHitPowerCritical[egdNovice], 1.2f), buf);
+	fvHitPowerCritical = crit_before;
+
+	// Bug 4: scopes_sect replaces the list
+	if (m_modular_attachments)
+	{
+		Msg("* [upgrade fix test] %s uses modular attachments; the scopes_sect check needs another gun", cNameSect().c_str());
+	}
+	else
+	{
+		const SCOPES_VECTOR scopes_before = m_scopes;
+		const u8 cur_before = m_cur_scope;
+		const ALife::EWeaponAddonStatus status_before = m_eScopeStatus;
+
+		install_upgrade_addon(scopes, false);
+		install_upgrade_addon(scopes, false);
+		xr_sprintf(buf, "two installs leave the upgrade's 2 scopes, not more: %u", u32(m_scopes.size()));
+		check(m_scopes.size() == 2 && m_scopes[0] == "mw_up_test_scope_a" && m_scopes[1] == "mw_up_test_scope_b", buf);
+		m_cur_scope = 1;
+		install_upgrade_addon(scopes, false);
+		check(m_cur_scope == 1, "the selected scope keeps its entry when the new list has it");
+
+		m_scopes = scopes_before;
+		m_cur_scope = cur_before;
+		m_eScopeStatus = status_before;
+	}
+
+	Msg("%s [upgrade fix test] %s", failed ? "!" : "-", failed ? "FAILED" : "all checks passed");
+	return failed == 0;
 }

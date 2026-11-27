@@ -5643,6 +5643,9 @@
     <ClInclude Include="instance_section.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
+    <ClInclude Include="stat_mods.h">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClInclude>
     <ClInclude Include="instance_record_script.h">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClInclude>
@@ -9271,6 +9274,9 @@
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClCompile>
     <ClCompile Include="instance_section.cpp">
+      <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
+    </ClCompile>
+    <ClCompile Include="stat_mods.cpp">
       <Filter>Core\Client\Objects\inventory\InventoryItem</Filter>
     </ClCompile>
     <ClCompile Include="instance_record_script.cpp">

@@ -377,6 +377,9 @@ public:
 	// back the live state, clamped to the new config (runtime_snapshot / runtime_restore). ReloadConfig (3c) builds
 	// on it.
 	void RerunLoad(SWeaponRestoreReport* report = nullptr);
+	// Console upgrade_fix_test: runs the hit_power_critical and scopes_sect upgrade handlers on this weapon with the
+	// test sections from tests/instance_record (WEAPON_OBJECTS.md bugs 1 and 4), then puts the touched fields back
+	bool upgrade_fix_self_test();
 	// 3c: ReloadConfig requests. A change to the config overrides queues the weapon once; the queue
 	// (CLevel::OnFrame) runs RerunLoad when the weapon can be rebuilt, so several changes give one rebuild.
 	bool can_reload_config() const;

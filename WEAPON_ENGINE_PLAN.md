@@ -2,7 +2,7 @@
 
 How to change xray-monolith so that every weapon is an independent object: one base model, parts as separate models fitted at runtime, and a per-weapon record that rebuilds the gun on save and load. It builds on [WEAPON_MODELS.md](WEAPON_MODELS.md), [WEAPON_OBJECTS.md](WEAPON_OBJECTS.md) and the Part_bench mod (`../part_bench`, its `AGENTS.md` and `mw_*` scripts).
 
-Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Phase 2: 2a (the record type) tested, 2b (saving it) tested, 2c (game-side copy and sync) tested (sections 4.1–4.3), 2d (runtime block) fire mode tested (section 4.4), 2e (dynamic sections) tested (section 5.1), 2f (generated sections) tested, 2g (reading them) tested (sections 5.2, 5.3), 2h (script API, first slice) and 2i (tests) tested (section 14). Phase 2 is complete. Phase 3: 3a (`Load` safe to run again) tested, 3b (runtime snapshot and clamped restore) tested (section 6.1); 3c (state values and the reload flag) tested (section 6.2); 3d (stacked modifiers) planned (section 6.3). Sizes are estimates from reading the code.
+Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Phase 2: 2a (the record type) tested, 2b (saving it) tested, 2c (game-side copy and sync) tested (sections 4.1–4.3), 2d (runtime block) fire mode tested (section 4.4), 2e (dynamic sections) tested (section 5.1), 2f (generated sections) tested, 2g (reading them) tested (sections 5.2, 5.3), 2h (script API, first slice) and 2i (tests) tested (section 14). Phase 2 is complete. Phase 3: 3a (`Load` safe to run again) tested, 3b (runtime snapshot and clamped restore) tested (section 6.1); 3c (state values and the reload flag) tested (section 6.2); 3d (stacked modifiers) tested (section 6.3). Revised 2026-11-27: Part_bench logic (resolving, bench, part mods) stays in script and the engine draws from the record (decisions, 6.4, 6.5, 8.1). Sizes are estimates from reading the code.
 
 ---
 
@@ -15,13 +15,13 @@ Agreed on 2026-11-24:
 | Where per-weapon data lives | A **record on the weapon's server entity**, written to the save. At spawn the engine turns it into a **generated in-memory section** `[<base>_i<id>]:<base>` that the client object loads. An `.ltx` dump exists for debugging only. |
 | What a fitted part keeps | **Embedded state**: section, condition, installed upgrades, and a small per-part data blob. Detaching respawns a real item with that state. No entity exists while the part is fitted. |
 | Existing content | **Replace everywhere.** Every firearm moves to the new model. Baked combo sections (`wpn_ak74_kobra`), addon flags and `alife_clone_weapon` swaps are mapped onto base + parts, for new spawns and for old saves. |
-| Engine vs. Lua | **Engine core, Lua edges.** The engine owns the record, persistence, mount resolving, part drawing, stats, aim and gameplay effects. Lua keeps the bench UI, hand poses and shims for other mods, through new engine APIs. |
+| Engine vs. Lua | **Revised 2026-11-27: script decides, engine draws and computes.** The engine owns the record, persistence, generated sections, stat stacking (6.3), `ReloadConfig`, drawing the parts the record lists, and the aim and gameplay effects of what is fitted. Script owns everything Part_bench does: mount resolving and fit rules, the bench (view, preview, apply), and what a part's mods do, which it expresses through the record API (overrides, modifiers, part props). The resolver writes each part's placement into the record, so the engine draws a gun without running Lua, offline guns and NPC guns included. Hand poses and shims for other mods stay in Lua too. (Was: "Engine core, Lua edges", with mount resolving and part stats in the engine.) |
 | How changes apply | **In-place refresh only** (agreed 2026-11-24). Every part change updates the record, then `ReloadConfig` recomputes the same live object from base + record (section 6). There is no incremental "add onto the live object" path, so the live gun always matches what a reload would rebuild. A change that only moves parts takes a short path inside `ReloadConfig`, which must give the same result as a full rebuild (section 8.3). |
 | Rails and free placement | **Supported by the engine, not shipped as gameplay** (agreed 2026-11-25). Mounts can be rails with a length, parts sit at a position on them, and several parts can share one rail. The engine provides the data, record, resolver rules and script API. Moving parts along rails in the UI is left to mods (section 8.3). |
 
 Assumptions made without asking (change them if wrong):
 
-- **Part stats are recomputed, not installed.** A part's stat effects use the existing upgrade property syntax, but they are applied on every rebuild and never added to the weapon's installed-upgrade list. Removing a part is just a rebuild without it. This drops Part_bench's "Apply = clone with a new upgrade list".
+- **Part stats are recomputed, not installed.** A part's stat effects live in the record (script modifiers under the part's source, or the part's own `stat_mods`, 6.3) and are applied on every rebuild, never added to the weapon's installed-upgrade list. Removing a part is just a rebuild without it. This drops Part_bench's "Apply = clone with a new upgrade list". Which effects a part has is the script's call (6.4).
 - **"One model" means one file and one instance** (revised 2026-11-24). First person and third person draw the same model instance with the same pose, bone visibility, parts and shaders. Only the transform and the HUD pass draw state (FOV, depth range) differ per view (section 7).
 - **Part_bench's data format is the starting schema.** Keys such as `mw_mounts`, `mw_defaults`, `mount_type`, `accepts`, `positions`, `blocks`, `long`, `pair`, `canted` and `aim_bone` are kept, so the existing part `.ltx` files and meshes keep working.
 - **Single-player only.** Network sync is kept just correct enough for the local client/server pair.
@@ -124,7 +124,7 @@ Each workstream below lists what changes, where, what Part_bench already has, an
 | W2 | Instance record and save format | M | — |
 | W3 | Generated sections and base identity | M | W2 |
 | W4 | `ReloadConfig`: rebuild the same object | L | W3 |
-| W5 | Mount resolver in C++ | M | W2 |
+| W5 | Placement data and model queries for the script resolver (revised 2026-11-27, 8.1) | S–M | W2 |
 | W6 | Engine-owned part rendering | L | W1, W5 |
 | W7 | Gameplay from parts, replacing the three addon flags | L | W4, W5 |
 | W8 | Aim from the mount chain | M | W5, W6 |
@@ -264,7 +264,7 @@ Built in this order, later layers overriding earlier ones:
 3. **Overrides** from the record.
 4. **Stacked modifiers** (`stat_mods` from upgrades and parts, and script modifiers), combined per key (section 6.3).
 
-Part_bench-style part **modifiers**, which name upgrade sections, are not written here. They are applied after `Load` through the upgrade handlers (section 6.4), so additive keys add instead of overwrite.
+Part_bench-style part **modifiers**, which name upgrade sections, are turned into script modifiers by the bench script (section 6.4), so they reach this section as layer 4.
 
 A matching **generated HUD section** `[<hud>_i<id>]` carries the computed aim offsets (W8) and, later, hand-pose animation keys if poses ever move into the engine.
 
@@ -435,15 +435,30 @@ Adding or removing a modifier is a config change: it rebuilds the section and, o
 
 **Done when:** an upgrade, a part and a script modifier on `rpm` combine into the expected value on a live gun without respawning it, and removing any one of them gives the same stats as a gun built with only the other two.
 
+**Implemented 2026-11-27 (3d), tested in game 2026-11-27:** `instance_record_test`, `mods()`, `mods_upgrades()` (both install orders, and again after a save/load), `mods_outfit()` across a save/load and the `verify()` round all pass. Script installs need `inventory_upgrades.force_upgrade = true` away from a mechanic, as `ui_workshop` does; the engine side needed no change.
+- **Record** (`InstanceRecord.h/.cpp`): `SInstanceModifier` list after the runtime block, format **version 3** (versions 1 and 2 read with no modifiers). `add_modifier` replaces on the same source and key; `remove_modifier(source [, key])`. Caps 256 and 64 per source. `same_config` now also compares the modifiers and the parts whose section has `stat_mods` (other part edits still change no config). Self-test sections 8 and 9.
+- **`stat_mods.h/.cpp`** (new): collects upgrade (`upgrade:<id>`, from the property section `section =` names), part (`part:<id>`) and script contributions; applies the formula per list element; limits from `[stat_mod_limits]` in pSettings if a mod defines it, else `configs/misc/stat_mods.ltx`; `pct_floor` is a line in that section. Each skipped key is logged once per item section.
+- **`instance_section::build/needed`** take the item's upgrades. Modifiers start from the config override when there is one, and replace its value in the section. A record or upgrade set with only skipped modifiers gets no section. Callers: `Level_network_spawn` (server `m_upgrades`, before `Load`) and `refresh_instance_section` (game `m_upgrades`).
+- **Upgrades:** `install_upgrade_impl` counts a `stat_mods` line, so an upgrade with only that is not "EMPTY or FAILED". `add_upgrade` (not loading) marks the section stale and requests `ReloadConfig` when the upgrade has `stat_mods`. The old handlers are unchanged and still apply after `Load`.
+- **Script API** on `game_object` and `cse_alife_inventory_item`: `add_modifier`, `remove_modifier`, `get_modifiers([key])`, `explain_stat(key)` (`base, base_is_default, flat, pct, pct_used, clamped, final, modified, error, sources`). Console `stat_explain <key>` also compares with the value in the generated section.
+- **Found:** outfits don't read `fire_wound_protection` from their section (`Load` sets 0; bone armour is used), so a modifier on it does nothing. The outfit test uses `burn_protection`.
+- **Tests** (`mw_ir.script`): `mods()`, `mods_spawn()` + `mods_upgrades()` (two AK-74 upgrades given `stat_mods` by `configs/mod_system_mw_stat_mods_test.ltx`, installed in opposite orders), `mods_outfit()`. `prepare()` adds a `rpm +25%` script modifier over the `rpm = 120` override, so `verify()` expects 150.
+
 ### 6.4 Part modifiers
 
-Stat changes from parts now go through `stat_mods` (6.3). This section covers Part_bench's existing `modifiers`, which name upgrade sections.
+**Revised 2026-11-27: script-driven.** Part_bench's `modifiers` (upgrade-style property sections) are applied by the bench script, not by the engine. When a part is fitted, the script reads its property section and adds one modifier per numeric key with `add_modifier("part:<id>", key, value)` (flat, the way the upgrade handlers add). When the part is removed, `remove_modifier("part:<id>")` takes them all back. Keys the upgrade handlers replace rather than add (`hit_power`, `ammo_class`, `scope_status`) become config overrides that the script sets and clears. The engine adds nothing for this: the record API from 3c and 3d covers it, and the stacking is order-independent.
 
-Each part's `modifiers` sections are applied with the existing `install_upgrade_impl` chain (`xrGame/WeaponUpgrade.cpp:23`), with `loading = true`, but **not** added to `m_upgrades`. Part_bench's `upgrade =` sections work unchanged. While here, fix bug 1 (`hit_power_critical` writes zeros, `WeaponUpgrade.cpp:180`) and bug 4 (`scopes_sect` appended without a clear).
+Parts may still declare `stat_mods` directly (6.3); the engine applies those for any part in the record, so content that wants no script logic needs none.
+
+**Engine work left here:** two upgrade-handler bugs, which affect normal mechanic upgrades too: bug 1 (`hit_power_critical` writes zeros, `WeaponUpgrade.cpp:180`) and bug 4 (`scopes_sect` appended without a clear). **Fixed 2026-11-27, tested in game 2026-11-27 (`upgrade_fix_test` passes):** the critical-hit string is read into the right variable, and the `scopes_sect` branch clears the list first, keeping the fitted scope's entry when the new list has it. Console `upgrade_fix_test` (gun in hand) runs both handlers with test sections from `tests/instance_record` and restores the fields it touched.
 
 ### 6.5 Bench preview
 
-The bench previews a configuration by applying a **preview record** to the gun through `ReloadConfig` while the bench holds it (the gun is not in hands), and reverting on cancel. The bench then reads stats from the real object, so they always match what Apply gives. This replaces Part_bench's Lua stat prediction.
+**Revised 2026-11-27: script-driven.** The bench script previews with the existing calls: it saves the gun's overrides, modifiers and parts, applies the candidate configuration through the record API, reads the result, and on cancel puts the saved state back. Two ways to read it:
+- **Numbers without a rebuild:** `explain_stat(key)` computes the final value of any config key from the record as it stands, before `ReloadConfig` runs.
+- **The real object:** while the bench holds the gun (not in hands) `ReloadConfig` runs on the next frame, and the script reads stats from the live gun, so they always match what Apply gives.
+
+Possible engine helpers, added only if the bench needs them: an `on_weapon_rebuilt(wpn)` callback (already listed in section 14) so the script knows when the live values are current, and a way to restore a whole saved record in one call instead of key by key.
 
 **Done when:** fitting a suppressor and then removing it leaves the gun's ID, slot, ammo and upgrades unchanged, and its stats equal a fresh gun's.
 
@@ -610,26 +625,37 @@ Notes:
 
 ---
 
-## 8. W5 + W6: Mounts and part rendering in the engine
+## 8. W5 + W6: Mounts (script) and part rendering (engine)
 
-### 8.1 W5: Resolver
+### 8.1 W5: Placement data for the script resolver
 
-Port `mw_resolve.script` to C++ as `CWeaponPartResolver`. Input: base section plus record. Output: an ordered node list (path, part, parent, transform for HUD and world, role) and a list of errors.
+**Revised 2026-11-27:** the resolver stays in Lua (`mw_resolve.script`, with its rules and `mw_resolve_test.script` unchanged). The engine does not decide what fits where. It needs three things from the script, and gives it two.
 
-Keep Part_bench's rules exactly, and port `mw_resolve_test.script` as a test suite run from a console command:
+**From the script, stored in the record** (reserved part props, written by the resolver when a part is fitted or moved):
+- `bone`: the bone on the parent model (the gun, or the parent part) the part hangs from;
+- `offset`: position and rotation relative to that bone, `x, y, z, h, p, b`;
+- `hides`: gun bones to hide while the part is fitted (generalises Part_bench's `iron_sights` rule and the three addon bones).
 
-- `accepts` by `mount_type`; `positions` with `*`; `blocks` on mounts and parts; the earlier mount wins a clash
-- defaults from `mw_defaults`, explicit empties
-- `long` / `far_*`, `pair` / `pair_only`, `canted` and `canted_on_canted`
-- `align_bone` and `fix`
+Storing the result, not the rules, means a gun spawned without any script (offline, an NPC's, after a load) draws exactly as the bench left it, and a rebuild never depends on script state.
 
-Added on top of Part_bench: rails, positions, span overlap, stops and placement-only changes (section 8.3).
+**Who does what (agreed 2026-11-27).** Modders decide how a part is applied: which bone, where, how rotated, what it hides. The engine renders from those values and owns everything that has to happen every frame or in both views: following the animated bone, drawing the part in the HUD and world passes from the same values, shadows, part lights, lens bones and dropped-gun collision. The engine fixes how a part is drawn, never where or why it goes there.
 
-**Bind poses:** `mw_ogf.script` parses OGF files to read bone bind poses. The engine already loads the model, so it reads them from the kinematics' bone data. The Lua OGF parser, and its guessed rotation order, go away.
+**Placement hook (agreed 2026-11-27).** A mod can register `place_parts(wpn, parts)` (`register_place_parts(func)`, section 14). When one is registered, it runs on every rebuild of a gun with parts, before the part tree is built. It receives the record's parts with their current placement props and returns the placement props to use: `bone`, `offset` and `hides` per part id, and any part it leaves out keeps its stored values. The engine writes what it returns back into the record, so the next spawn without the script still draws the same gun.
+- **Why both.** The stored values make every gun draw with no script running and give the same gun from the same record. The hook lets a mod change its rules later (a new rail layout, a fix to an offset) and have every gun pick that up on its next rebuild, instead of keeping stale placements until the bench touches it again.
+- **Cost.** With no hook registered, nothing calls into Lua, so an unmodded game pays nothing. With one, it runs once per rebuild, not per frame.
+- **Failure.** If the hook errors or returns nothing usable for a part, the stored values are used and one log line names the gun and part. A broken mod never leaves a gun with undrawn parts.
+- **Placement-only.** A hook result, or a `set_part_prop` call, that changes only `bone`, `offset` or `hides` is a placement-only change (8.3): the engine updates the attachment transforms and bone visibility without rebuilding the config, so moving a part along a rail stays cheap.
+- **Several mods.** Hooks run in registration order, each seeing the previous one's result.
+
+**To the script:**
+- **Bind poses.** `mw_ogf.script` parses OGF files to read bone bind poses, with a guessed rotation order. The engine reads them from the loaded kinematics instead: `bone_bind_transform(visual_or_section, bone)` and `list_bones` for a model the script names. The Lua OGF parser goes away.
+- **What is fitted.** `get_parts()` already returns every part with its props.
+
+Rails, positions and stops (8.3) are resolver rules, so they are script work too. The engine only needs `offset` to change.
 
 ### 8.2 W6: Rendering
 
-The weapon owns **one part tree**, built from the resolver's nodes on its single model instance (W1). It exists while the gun is online, whoever holds it and in whichever view.
+The weapon owns **one part tree**, built from the record's parts and their placement props (8.1) on its single model instance (W1). It exists while the gun is online, whoever holds it and in whichever view. A part without placement props is not drawn, and a log line names it.
 
 Implementation:
 
@@ -638,7 +664,7 @@ Implementation:
 - **Parts use world shaders too** (W1, 7.4). They load without `hud_loading`, so the existing problem of HUD parts getting the wrong shader variant disappears.
 - Build the trees in `net_Spawn`, in `ReloadConfig`, and when the HUD item is attached. This replaces Part_bench's `mw_render` diffing, its one-frame-late redraw from `game_object_on_net_spawn`, and its active-item polling.
 - **Nested mounts on part bones.** Part_bench spike 2b found that a nested attachment's parent bone was looked up on the gun. The current source looks it up on the parent attachment (`script_attachment::SetParentBone`, `xrGame/script_attachment_manager.cpp:1551`). Re-test on the current build. If it works, part mounts use the part's bones directly and the offset workaround goes away.
-- **Bone hiding on the gun:** while a mount holds a part, hide the gun bones in its `hides` list. This generalises Part_bench's `iron_sights` rule and replaces the three addon bones (`wpn_scope`, `wpn_silencer`, `wpn_launcher`).
+- **Bone hiding on the gun:** while a part is fitted, hide the gun bones in its `hides` prop (8.1). This replaces the three addon bones (`wpn_scope`, `wpn_silencer`, `wpn_launcher`).
 - **Lens bones:** the engine handles `lens_show_bone` / `lens_hide_bone` per view and aim state, as Part_bench's `mw_aim` does today.
 - **Physics:** a dropped gun's part attachments add collision geometry through the existing attachment physics, so a long scope doesn't sink into the ground.
 - **Lights and lasers:** the engine creates the part's `attachment_script_light` from its `light` section. With one tree, a part has one light. It is placed from the HUD transform in first person and from the world transform otherwise, which replaces `mw_light`'s pair of HUD and world lights. The laser beam's `models_laserbeam` surfaces draw only in the HUD pass today; check that this still holds once parts use world shaders. Switching on and off and batteries stay in Lua, through an engine on/off call and the part's data blob.
@@ -700,11 +726,13 @@ The roll of a part is read from its whole mount chain. A sight counts as canted 
 - `hides` applies while the mount holds any part. Rules that depend on position, such as hiding only the front sight post, go through the resolve callback below.
 - Part_bench's `long` / `far_*` and `pair` rules stay as they are. Where a gun uses stops, they read the stop names.
 
-**Placement changes vs. topology changes.** The resolver returns its nodes with a flag that says whether the set of parts and their mounts changed, or only `pos` and placement props changed. `ReloadConfig` takes the short path for a placement-only change: update each moved attachment's offset, recompute aim (W8) and write the new aim keys into the generated HUD section and the live `hud_item_measures`. It skips the generated section's stats, `CWeapon::Load` and the part tree rebuild. The short path must give the same result as a full rebuild. A debug check runs both and compares them (section 17). This keeps the "in-place refresh only" decision: the live gun still always matches what a reload would rebuild.
+**Revised 2026-11-27:** placement rules, rails and the resolve callback below are script work now (8.1); the engine keeps only the short path for placement-only changes.
+
+**Placement changes vs. topology changes.** The engine compares the old and new record: if the set of parts is the same and only `pos` and placement props changed, it is a placement-only change. `ReloadConfig` takes the short path for a placement-only change: update each moved attachment's offset, recompute aim (W8) and write the new aim keys into the generated HUD section and the live `hud_item_measures`. It skips the generated section's stats, `CWeapon::Load` and the part tree rebuild. The short path must give the same result as a full rebuild. A debug check runs both and compares them (section 17). This keeps the "in-place refresh only" decision: the live gun still always matches what a reload would rebuild.
 
 **Script contract.** A mod that edits placement needs only the calls in section 14: read the rails and what occupies them (`get_mounts`), test a fit (`can_fit` with a position), commit (`fit_part` with a position, `move_part`), and store its own state per part (`get_part_prop` / `set_part_prop`). The engine's fit by drag and drop and the bench use `default_pos` and never move a part. They are one user of the API, and a rail mod is another.
 
-**Resolve callback.** `on_part_resolve(wpn, node, ctx)` runs for each node during a rebuild. It may refuse the node with a reason or add a local transform, such as rotating a part from a `rot` prop. To keep rebuilds reproducible, it may read only the record (props included) and config, not game state or time. The same record must always give the same gun. The callback receives nothing unless a script registers it, so it costs nothing in an unmodded game.
+**Resolve callback (dropped 2026-11-27: the resolver is a script, so it can call anything it likes).** Was: `on_part_resolve(wpn, node, ctx)` runs for each node during a rebuild. It may refuse the node with a reason or add a local transform, such as rotating a part from a `rot` prop. To keep rebuilds reproducible, it may read only the record (props included) and config, not game state or time. The same record must always give the same gun. The callback receives nothing unless a script registers it, so it costs nothing in an unmodded game.
 
 **What stays out of the engine:** the dragging UI, rules for how far an eye-relief scope may sit from the eye, and any per-mod placement data. These live in Lua, in props and in mod `.ltx` sections.
 
@@ -751,10 +779,11 @@ Port `mw_aim.script` into the generated HUD section:
 ### 10.1 W9: Fit and remove
 
 - **Part items.** A part item is any inventory item whose section has `mount_type`, or that a part names in `inv_item`.
-- **Fit:** `CWeapon::FitPart(path, item)` validates through the resolver, moves the item's condition, upgrades and per-item data into the record, destroys the item entity, and runs `ReloadConfig`.
-- **Remove:** `CWeapon::RemovePart(path, spawn)` spawns an item of the part's section in the owner's inventory with its saved state, then rebuilds. Parts mounted on the removed part come off too, each returned as its own item.
-- **Drag and drop.** Generalise `CWeaponMagazined::CanAttach` / `Attach` / `Detach` (`xrGame/WeaponMagazined.cpp:1287`) to try a part fit: the first free compatible mount, else refuse with the resolver's reason. The context menu lists fitted parts for removal.
-- **The bench** (Part_bench UI, Lua) calls the same functions, plus the preview record from 6.5.
+**Revised 2026-11-27:** the script decides whether and where a part fits; the engine only moves state atomically.
+- **Fit:** `fit_part(item, parent_id, mount, props)` moves the item's condition, upgrades and per-item data into the record with the placement props the script resolved, destroys the item entity, and runs `ReloadConfig`. It checks nothing about compatibility.
+- **Remove:** `remove_part(id [, spawn])` spawns an item of the part's section in the owner's inventory with its saved state, then rebuilds. Parts mounted on the removed part come off too, each returned as its own item.
+- **Drag and drop.** `CWeaponMagazined::CanAttach` / `Attach` / `Detach` (`xrGame/WeaponMagazined.cpp:1287`) ask a script callback, `on_part_fit_request(wpn, item)`, which returns where to fit it (or a refusal reason) and then calls `fit_part`. With no callback registered the old addon behaviour stays. The context menu lists fitted parts for removal.
+- **The bench** (Part_bench UI, Lua) calls the same functions and previews as in 6.5.
 - **Mechanic upgrades** no longer unload and detach everything (`pre_install_upgrade`, `xrGame/inventory_item_upgrade.cpp:260`). Parts stay fitted, and the rebuild applies the new upgrade.
 
 ### 10.2 W10: Icons
@@ -888,13 +917,11 @@ On the weapon's game object unless noted:
 |---|---|
 | `instance_section()` | Generated section name |
 | `get_parts()` | Table of path → `{id, parent, mount, pos, props, section, condition, upgrades, data}` |
-| `get_mounts([path])` | Mounts and what each accepts, for the bench; for rails also `length`, `pitch`, `stops` and the occupied spans `{id, from, to}` |
-| `can_fit(path, section [, pos])` | `nil` / `"clash", reason` / `true`, the same contract as `mw_resolve.check`; `pos` defaults to `default_pos` |
-| `fit_part(path, item_or_section [, state [, pos]])`, `remove_part(path_or_id [, spawn])` | Commit changes; `fit_part` returns the new part's id |
-| `move_part(path_or_id, pos)` | Move a part along its rail; a placement-only change (8.3) |
-| `get_part_prop(path_or_id, key)`, `set_part_prop(path_or_id, key, value)` | Placement and mod state saved in the record and visible to resolve callbacks (8.3) |
-| `register_part_resolve(func)` | Add an `on_part_resolve` callback (8.3) |
-| `set_preview(record)`, `clear_preview()` | Bench preview (6.5) |
+| `fit_part(item_or_section, parent_id, mount, props [, state])`, `remove_part(id [, spawn])` | Commit changes; `fit_part` returns the new part's id. No compatibility check: the script resolver (Lua `get_mounts` / `can_fit`) decides first (revised 2026-11-27) |
+| `get_part_prop(id, key)`, `set_part_prop(id, key, value)` | Placement (`bone`, `offset`, `hides`, 8.1) and mod state saved in the record. A change to placement props only is a placement-only rebuild (8.3) |
+| `bone_bind_transform(visual_or_section, bone)` | Bind pose of a bone, for the script resolver (8.1) |
+| `register_place_parts(func)` | Global, not per weapon. Adds a `place_parts(wpn, parts)` hook that can replace placement props on every rebuild; results are written back into the record (8.1) |
+| `add_modifier`, `remove_modifier`, `get_modifiers`, `explain_stat` | Stacked modifiers (6.3, implemented); the bench uses them for part stats (6.4) and previews (6.5) |
 | `get_part_data(path)`, `set_part_data(path, string)` | Per-part blob (battery, reticle mark) |
 | `get_override(key)`, `set_override(key, value [, reload])`, `iterate_overrides()` | Persistent per-gun keys, and persistent versions of `SetRPM` and the other setters. `reload = false` stores a state value that never reaches the generated section or triggers a rebuild (6.2) |
 | `get_paintjob([path])`, `set_paintjob([path,] section_or_nil)` | Gun paintjob, or a fitted part's paintjob by path; `nil` clears it. Also available on loose part items (section 13) |
@@ -936,11 +963,11 @@ Console commands (with `-dbg`): `mw_dump <id>` writes the generated section to a
 
 | Part_bench | Becomes |
 |---|---|
-| `mw_resolve.script` | `CWeaponPartResolver` in C++ (W5). Lua keeps only the bench's listing helpers, through `get_mounts` / `can_fit` |
+| `mw_resolve.script` | Stays in Lua (revised 2026-11-27). Writes each part's placement into the record (8.1) |
 | `mw_state.script` (`m_data.mw_parts`) | The instance record (W2) |
 | `mw_render.script` (separate `mw_h:` and `mw_w:` trees) | One engine part tree on the shared instance (W6) |
-| `mw_apply.script` (clone + upgrade list) | `fit_part` / `remove_part` + `ReloadConfig` (W4, W9) |
-| `mw_ogf.script` | Bind poses from loaded kinematics (W5) |
+| `mw_apply.script` (clone + upgrade list) | Stays in Lua, on `fit_part` / `remove_part`, the record API and `ReloadConfig` (W4, W9). Part `modifiers` become script modifiers (6.4) |
+| `mw_ogf.script` | `bone_bind_transform` from loaded kinematics (8.1) |
 | `mw_aim.script` | Generated HUD section aim (W8) |
 | `mw_scope.script` and the `mw_scope_*` items | The sight role (W7) |
 | `mw_compat.script` | Stays in Lua, keyed on the main sight from `get_parts()` |
@@ -960,7 +987,7 @@ Rough figures for one developer who knows the codebase, including testing.
 | 1 | W1 (1a–1e), spike for 1f | One model instance per gun, same pose and shaders in both views | 2–3 weeks |
 | 2 | W2, W3 | Per-gun record saved; generated sections; overrides persist | 2–3 weeks |
 | 3 | W4 | Same-object rebuild; mechanic upgrades without detaching | 2–4 weeks |
-| 4 | W5, W6 | Parts drawn by the engine from the record; rails and placement (8.3) | 4–6 weeks |
+| 4 | W5, W6 | Parts drawn by the engine from the placement the script resolver stores in the record (revised 2026-11-27); bind-pose queries | 2–4 weeks |
 | 5 | W7, W8, W9 | Parts drive gameplay and aim; fit and remove from inventory and bench | 4–6 weeks |
 | 6 | W10, W11, W14 | Icons, NPC loadouts, trade; paintjobs on guns and parts | 3–4 weeks |
 | 7 | W12 | Combo map, old-save migration, mod shims | 3–6 weeks, plus content |

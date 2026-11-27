@@ -388,7 +388,7 @@ u32 CInventoryItem::s_instance_builds = 0;
 void CInventoryItem::refresh_instance_section() const
 {
 	m_instance_section_stale = false;
-	m_instance_section = instance_section::build(object().cNameSect().c_str(), object_id(), m_instance); // 2f
+	m_instance_section = instance_section::build(object().cNameSect().c_str(), object_id(), m_instance, &m_upgrades); // 2f
 	++s_instance_builds;
 }
 
