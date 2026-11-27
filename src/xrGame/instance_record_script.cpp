@@ -14,6 +14,7 @@
 #include "ai_space.h"
 #include "script_engine.h"
 #include "stat_mods.h"
+#include "weapon_parts.h"
 
 namespace
 {
@@ -204,6 +205,73 @@ namespace
 		return t;
 	}
 
+	// ---- 4a: part props ----------------------------------------------------
+
+	bool set_part_prop(CSE_InstanceRecord& r, u16 id, LPCSTR key, const ::luabind::object& value)
+	{
+		if (!key || !*key)
+			return false;
+		xr_string s;
+		switch (script_value(value, s))
+		{
+		case eClear: return r.set_part_prop(id, key, nullptr);
+		case eSet:
+			{
+				xr_string normal, error;
+				if (!weapon_parts::normalise_prop(key, s.c_str(), normal, error))
+				{
+					Msg("! [weapon parts] part %u: %s = %s refused: %s", u32(id), key, s.c_str(), error.c_str());
+					return false;
+				}
+				return r.set_part_prop(id, key, normal.c_str());
+			}
+		default: return false;
+		}
+	}
+
+	::luabind::object bind_bone(lua_State* L, const weapon_parts::SBindBone& b)
+	{
+		::luabind::object t = ::luabind::newtable(L);
+		t["name"] = b.name.c_str();
+		t["parent"] = b.parent.size() ? b.parent.c_str() : "";
+		t["pos"] = b.pos;
+		t["hpb"] = b.hpb;
+		return t;
+	}
+
+	// model_bones(model_or_section): bone name -> {name, parent, pos, hpb}, or nil
+	int lua_model_bones(lua_State* L)
+	{
+		LPCSTR model = lua_tostring(L, 1);
+		const weapon_parts::BindBones* bones = weapon_parts::model_bones(model);
+		if (!bones)
+		{
+			lua_pushnil(L);
+			return 1;
+		}
+		::luabind::object t = ::luabind::newtable(L);
+		for (const weapon_parts::SBindBone& b : *bones)
+			t[b.name.c_str()] = bind_bone(L, b);
+		t.pushvalue();
+		return 1;
+	}
+
+	// bone_bind_transform(model_or_section, bone): {name, parent, pos, hpb}, or nil
+	int lua_bone_bind_transform(lua_State* L)
+	{
+		LPCSTR model = lua_tostring(L, 1);
+		LPCSTR bone = lua_tostring(L, 2);
+		const weapon_parts::BindBones* bones = model && bone ? weapon_parts::model_bones(model) : nullptr;
+		const weapon_parts::SBindBone* b = bones ? weapon_parts::find_bone(*bones, bone) : nullptr;
+		if (!b)
+		{
+			lua_pushnil(L);
+			return 1;
+		}
+		bind_bone(L, *b).pushvalue();
+		return 1;
+	}
+
 	// The upgrades a server item has: the game object's list while it is online
 	xr_vector<shared_str> server_upgrades(CSE_ALifeInventoryItem* se);
 
@@ -258,6 +326,22 @@ namespace
 			for (const SInstanceProp& pr : part.props)
 				props[pr.key.c_str()] = pr.value.size() ? pr.value.c_str() : "";
 			p["props"] = props;
+
+			// 4a: the placement the engine draws from, parsed; absent until the resolver sets a bone
+			weapon_parts::SPlacement pl;
+			if (weapon_parts::read_placement(part, pl))
+			{
+				::luabind::object placement = ::luabind::newtable(L);
+				placement["bone"] = pl.bone.c_str();
+				placement["pos"] = pl.pos;
+				placement["hpb"] = pl.hpb;
+				::luabind::object hides = ::luabind::newtable(L);
+				int h = 1;
+				for (const shared_str& name : pl.hides)
+					hides[h++] = name.c_str();
+				placement["hides"] = hides;
+				p["placement"] = placement;
+			}
 
 			t[path.c_str()] = p;
 		}
@@ -411,6 +495,18 @@ namespace instance_record_script
 		            : ::luabind::newtable(L);
 	}
 
+	LPCSTR go_get_part_prop(CScriptGameObject* self, u16 id, LPCSTR key)
+	{
+		CInventoryItem* item = game_item(self);
+		return item ? item->instance_record().get_part_prop(id, key) : nullptr;
+	}
+
+	bool go_set_part_prop(CScriptGameObject* self, u16 id, LPCSTR key, const ::luabind::object& value)
+	{
+		CInventoryItem* item = game_item(self);
+		return item && edit_game(item, [&](CSE_InstanceRecord& r) { return set_part_prop(r, id, key, value); });
+	}
+
 	// ---- server item ----------------------------------------------------
 
 	LPCSTR se_get_override(CSE_ALifeInventoryItem* self, LPCSTR key)
@@ -479,6 +575,16 @@ namespace instance_record_script
 		return self ? server_view(self).byte_size() : 0;
 	}
 
+	LPCSTR se_get_part_prop(CSE_ALifeInventoryItem* self, u16 id, LPCSTR key)
+	{
+		return self ? server_view(self).get_part_prop(id, key) : nullptr;
+	}
+
+	bool se_set_part_prop(CSE_ALifeInventoryItem* self, u16 id, LPCSTR key, const ::luabind::object& value)
+	{
+		return edit_server(self, [&](CSE_InstanceRecord& r) { return set_part_prop(r, id, key, value); });
+	}
+
 	bool se_add_modifier_mode(CSE_ALifeInventoryItem* self, LPCSTR source, LPCSTR key, float value, LPCSTR mode)
 	{
 		u8 m;
@@ -527,4 +633,10 @@ namespace
 			return item->get_upgrades();
 		return se->m_upgrades;
 	}
+}
+
+void weapon_parts_registrator::script_register(lua_State* L)
+{
+	lua_register(L, "model_bones", &lua_model_bones);
+	lua_register(L, "bone_bind_transform", &lua_bone_bind_transform);
 }

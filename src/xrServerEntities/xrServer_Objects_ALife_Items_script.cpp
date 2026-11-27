@@ -71,6 +71,8 @@ void CSE_ALifeInventoryItem::script_register(lua_State* L)
 		.def("get_modifiers", &instance_record_script::se_get_modifiers, raw<1>())
 		.def("get_modifiers", &instance_record_script::se_get_modifiers_key, raw<1>())
 		.def("explain_stat", &instance_record_script::se_explain_stat, raw<1>())
+		.def("get_part_prop", &instance_record_script::se_get_part_prop)
+		.def("set_part_prop", &instance_record_script::se_set_part_prop)
 	];
 }
 

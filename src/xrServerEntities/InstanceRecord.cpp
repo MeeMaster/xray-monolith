@@ -554,6 +554,58 @@ u16 CSE_InstanceRecord::add_part(u16 parent, LPCSTR mount, LPCSTR section, float
 	return part.id;
 }
 
+LPCSTR CSE_InstanceRecord::get_part_prop(u16 id, LPCSTR key) const
+{
+	const SInstancePart* part = find_part(id);
+	if (!part || !key)
+		return nullptr;
+	for (const SInstanceProp& p : part->props)
+		if (!xr_strcmp(p.key, key))
+			return p.value.c_str();
+	return nullptr;
+}
+
+bool CSE_InstanceRecord::set_part_prop(u16 id, LPCSTR key, LPCSTR value)
+{
+	SInstancePart* part = is_opaque() ? nullptr : find_part(id);
+	if (!part || !str_ok(key))
+		return false;
+	InstanceProps& props = part->props;
+	auto it = std::find_if(props.begin(), props.end(), [&](const SInstanceProp& p) { return !xr_strcmp(p.key, key); });
+	if (!value || !*value)
+	{
+		if (it == props.end())
+			return false;
+		props.erase(it);
+		return true;
+	}
+	if (xr_strlen(value) > MAX_STRING)
+		return false;
+	if (it != props.end())
+	{
+		const shared_str old = it->value;
+		it->value = value;
+		if (byte_size() > MAX_BYTES)
+		{
+			it->value = old;
+			return false;
+		}
+		return true;
+	}
+	if (props.size() >= MAX_PROPS)
+		return false;
+	SInstanceProp p;
+	p.key = key;
+	p.value = value;
+	props.push_back(p);
+	if (byte_size() > MAX_BYTES)
+	{
+		props.pop_back();
+		return false;
+	}
+	return true;
+}
+
 u32 CSE_InstanceRecord::remove_part(u16 id)
 {
 	if (is_opaque() || !find_part(id))
@@ -812,6 +864,26 @@ bool CSE_InstanceRecord::self_test()
 		b.read(P);
 		check(!b.is_opaque() && b.is_state_override("rpm") && b.modifiers.empty() && P.r_u32() == sentinel,
 			"version 2 record reads with its state flag and no modifiers");
+	}
+
+	// 10. Part props (4a)
+	{
+		CSE_InstanceRecord a;
+		const u16 id = a.add_part(0, "scope", "mw_sight");
+		check(a.set_part_prop(id, "bone", "wpn_body") && a.set_part_prop(id, "offset", "0, 0.1, 0") &&
+			!xr_strcmp(a.get_part_prop(id, "bone"), "wpn_body"), "part props are set and read");
+		check(a.set_part_prop(id, "bone", "wpn_scope") && a.find_part(id)->props.size() == 2 &&
+			!xr_strcmp(a.get_part_prop(id, "bone"), "wpn_scope"), "setting a part prop again replaces it");
+		check(!a.set_part_prop(999, "bone", "x") && !a.get_part_prop(999, "bone"), "a missing part is refused");
+		CSE_InstanceRecord b;
+		P.write_start();
+		a.write(P);
+		P.r_pos = 0;
+		b.read(P);
+		check(b == a && !xr_strcmp(b.get_part_prop(id, "offset"), "0, 0.1, 0"), "part props survive a round trip");
+		check(a.set_part_prop(id, "offset", nullptr) && !a.get_part_prop(id, "offset") && !a.set_part_prop(id, "offset", ""),
+			"clearing a part prop removes it, clearing it again returns false");
+		check(a.same_config(b), "part props change no config");
 	}
 
 	Msg("%s [instance record test] %s", failed ? "!" : "-", failed ? "FAILED" : "all checks passed");

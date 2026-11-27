@@ -29,6 +29,12 @@
 -- prepare() also gives the marked gun a script modifier, rpm +25% over its rpm = 120 override, so
 -- verify() expects rpm = 150 in the generated section.
 --
+-- Part placement and bind poses (4a, WEAPON_ENGINE_PLAN.md 8.1):
+--   run_string mw_ir.placement()      on the gun in your hands: placement props (bone, offset, hides),
+--                                     model_bones / bone_bind_transform, and the bind poses compared bone
+--                                     by bone with Part_bench's OGF parser (mw_ir_ogf.script) on the AK test model
+-- prepare() also places the marked gun's scope (PLACEMENT), and verify() checks the placement.
+--
 -- Every result goes to the log as "[mw_ir] PASS ..." or "[mw_ir] FAIL ...".
 
 local MARK = "mw_ir_mark"
@@ -38,6 +44,9 @@ local STATE_KEY, STATE_VALUE = "mw_ir_charge", "0.75"
 -- 3d: a script modifier stacking on the rpm override: 120 x 1.25
 local MOD = { source = "mw_ir:test", key = "rpm", value = 0.25, mode = "pct" }
 local RPM_FINAL = 150
+-- 4a: the scope part's placement, as the script resolver would write it, and its normal form
+local PLACEMENT = { bone = "wpn_body", offset = "0.0, 0.05,0.1, 0, 0, 90", hides = "wpn_scope, wpn_scope" }
+local PLACEMENT_OFFSET = "0, 0.05, 0.1, 0, 0, 90"
 
 -- The part tree prepare() builds; paths are what get_parts() must report
 local PARTS = {
@@ -278,6 +287,9 @@ function prepare()
 		ids[p.key] = w:record_add_part(parent, p.mount, p.section, p.pos)
 		check(ids[p.key] > 0, "add " .. p.key)
 	end
+	for k, v in pairs(PLACEMENT) do
+		check(w:set_part_prop(ids.scope, k, v), "place the scope: " .. k .. " = " .. v)
+	end
 	finish("prepare")
 	say(string.format("marked %s [%d]. Its rpm override applies after a save/load. Run verify() any time.", w:section(), w:id()))
 end
@@ -320,6 +332,10 @@ local function verify_record(get_override, get_parts, where, is_state, get_modif
 	local light, laser = by_section.mw_ir_light, by_section.mw_ir_laser
 	check(light and laser and parts["top#" .. light.id] and parts["top#" .. laser.id], where .. ": rail parts named top#<id>")
 	check(parts["scope/cover"] ~= nil, where .. ": child path scope/cover")
+	local pl = parts.scope and parts.scope.placement
+	check(pl and pl.bone == PLACEMENT.bone and near(pl.pos.y, 0.05) and near(pl.pos.z, 0.1) and near(pl.hpb.z, 90) and
+		#pl.hides == 1 and pl.hides[1] == "wpn_scope" and parts.scope.props.offset == PLACEMENT_OFFSET,
+		where .. ": scope placement " .. tostring(pl and pl.bone) .. " / " .. tostring(parts.scope and parts.scope.props.offset))
 end
 
 function verify()
@@ -697,4 +713,106 @@ end
 function mods_outfit_clear()
 	local o = db.actor:item_in_slot(7)
 	say(o and string.format("removed %d", o:remove_modifier("mw_ir:outfit")) or "no outfit")
+end
+
+---------------------------------------------------------------------------
+-- placement(): part placement props and bind poses (4a, WEAPON_ENGINE_PLAN.md 8.1)
+---------------------------------------------------------------------------
+
+-- The Part_bench test gun, a loose mesh the Lua OGF parser can read
+local OGF_MODEL = "mw\\wpn_ak74_n_one"
+
+function placement()
+	local w = gun()
+	if not w then return end
+	begin()
+	local se = alife_object(w:id())
+
+	-- Placement props
+	w:instance_section()
+	local c0 = w:record_counters()
+	local id = w:record_add_part(0, "mw_pl_mount", "mw_pl_part")
+	check(id > 0, "add a test part")
+	check(w:set_part_prop(id, "bone", "  wpn_body ") and w:get_part_prop(id, "bone") == "wpn_body", "bone is stored trimmed")
+	check(w:set_part_prop(id, "offset", "0.1,0.2, 0.3") and w:get_part_prop(id, "offset") == "0.1, 0.2, 0.3, 0, 0, 0",
+		"a 3-number offset is stored with zero rotation: " .. tostring(w:get_part_prop(id, "offset")))
+	check(w:set_part_prop(id, "offset", "0, 0, 0, 10, -20, 45") and w:get_part_prop(id, "offset") == "0, 0, 0, 10, -20, 45",
+		"a 6-number offset is stored as given")
+	check(not w:set_part_prop(id, "offset", "1, 2") and not w:set_part_prop(id, "offset", "1, 2, x"),
+		"a bad offset is refused")
+	check(w:get_part_prop(id, "offset") == "0, 0, 0, 10, -20, 45", "and the old one is kept")
+	check(not w:set_part_prop(id, "bone", "a, b"), "two bone names are refused")
+	check(w:set_part_prop(id, "hides", "wpn_scope, ,wpn_sight_front, wpn_scope") and
+		w:get_part_prop(id, "hides") == "wpn_scope, wpn_sight_front", "hides drops blanks and repeats: " .. tostring(w:get_part_prop(id, "hides")))
+	check(w:set_part_prop(id, "my_mod_state", "x=1;y=2") and w:get_part_prop(id, "my_mod_state") == "x=1;y=2",
+		"other props are stored as given")
+	check(w:set_part_prop(id, "rail_pos", 0.25) and w:get_part_prop(id, "rail_pos") == "0.25", "numbers are stored as text")
+
+	local p
+	for _, part in pairs(w:get_parts()) do
+		if part.id == id then p = part end
+	end
+	local pl = p and p.placement
+	check(pl and pl.bone == "wpn_body" and near(pl.hpb.x, 10) and near(pl.hpb.y, -20) and near(pl.hpb.z, 45) and
+		#pl.hides == 2 and pl.hides[2] == "wpn_sight_front", "get_parts() gives the parsed placement")
+	check(se and se:get_part_prop(id, "bone") == "wpn_body", "the server object reads the same props")
+	check(se and se:set_part_prop(id, "bone", "wpn_body_2") and w:get_part_prop(id, "bone") == "wpn_body_2",
+		"server-side set_part_prop on an online item reaches the game object")
+	check(w:set_part_prop(id, "my_mod_state", nil) and w:get_part_prop(id, "my_mod_state") == nil and
+		not w:set_part_prop(id, "my_mod_state", nil), "nil clears a prop; clearing it again returns false")
+	check(not w:set_part_prop(9999, "bone", "x"), "a missing part is refused")
+	w:instance_section()
+	check(w:record_counters().builds == c0.builds, "placement props build no section")
+	check(w:record_remove_part(id) == 1, "remove the test part")
+
+	-- Bind poses
+	local sect = w:section()
+	local bones = model_bones(sect)
+	local n = 0
+	if bones then for _ in pairs(bones) do n = n + 1 end end
+	if check(n > 0, "model_bones(" .. sect .. ") lists " .. n .. " bones") then
+		local name, b = next(bones)
+		local one = bone_bind_transform(sect, name)
+		check(one and one.name == name and near(one.pos.x, b.pos.x) and near(one.hpb.y, b.hpb.y) and one.parent == b.parent,
+			"bone_bind_transform agrees with model_bones for " .. name)
+		local roots = 0
+		for _, bone in pairs(bones) do
+			if bone.parent == "" then roots = roots + 1 end
+			if bone.parent ~= "" and not bones[bone.parent] then roots = roots + 100 end
+		end
+		check(roots == 1, "one root, and every parent is a bone of the model")
+	end
+	check(bone_bind_transform(sect, "mw_no_such_bone") == nil and model_bones("mw\\no_such_model") == nil,
+		"a missing bone or model gives nil")
+
+	-- Against Part_bench's OGF parser
+	local lua_bones = mw_ir_ogf.bones(OGF_MODEL)
+	local eng = model_bones(OGF_MODEL)
+	if not lua_bones then
+		say("meshes\\" .. OGF_MODEL .. ".ogf isn't a loose file here; the parser comparison was skipped")
+	elseif check(eng ~= nil, "model_bones reads " .. OGF_MODEL) then
+		check(model_bones(OGF_MODEL .. ".ogf") ~= nil and model_bones(string.gsub(OGF_MODEL, "\\", "/")) ~= nil,
+			"the model path may end in .ogf and use either slash")
+		local count, bad_pos, bad_rot, worst = 0, {}, {}, 0
+		for name, lp in pairs(lua_bones) do
+			local e = eng[name]
+			count = count + 1
+			if not e then
+				bad_pos[#bad_pos + 1] = name .. " (missing)"
+			else
+				local d = math.max(math.abs(e.pos.x - lp.pos[1]), math.abs(e.pos.y - lp.pos[2]), math.abs(e.pos.z - lp.pos[3]))
+				if d > 1e-4 then bad_pos[#bad_pos + 1] = string.format("%s (%.5f)", name, d) end
+				local m = mw_ir_ogf.hpb_matrix(e.hpb.x, e.hpb.y, e.hpb.z)
+				local r = 0
+				for i = 1, 3 do for j = 1, 3 do r = math.max(r, math.abs(m[i][j] - lp.rot[i][j])) end end
+				worst = math.max(worst, r)
+				if r > 1e-3 then bad_rot[#bad_rot + 1] = string.format("%s (%.4f)", name, r) end
+			end
+		end
+		check(#bad_pos == 0, string.format("bone positions match the OGF parser for %d bones%s", count,
+			#bad_pos > 0 and (": " .. table.concat(bad_pos, ", ")) or ""))
+		check(#bad_rot == 0, string.format("bone rotations match it through set_rotation's convention (worst %.6f)%s", worst,
+			#bad_rot > 0 and (": " .. table.concat(bad_rot, ", ")) or ""))
+	end
+	finish("placement")
 end

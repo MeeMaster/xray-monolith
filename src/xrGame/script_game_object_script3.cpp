@@ -238,6 +238,8 @@ class_<CScriptGameObject> script_register_game_object2(class_<CScriptGameObject>
 		.def("get_modifiers", &instance_record_script::go_get_modifiers, raw<1>())
 		.def("get_modifiers", &instance_record_script::go_get_modifiers_key, raw<1>())
 		.def("explain_stat", &instance_record_script::go_explain_stat, raw<1>())
+		.def("get_part_prop", &instance_record_script::go_get_part_prop)
+		.def("set_part_prop", &instance_record_script::go_set_part_prop)
 
 #ifdef CBULLETMANAGER_EX
 		.def("GetBulletCheckVisual", SAFE_WRAP(&CScriptGameObject::GetBulletCheckVisual))

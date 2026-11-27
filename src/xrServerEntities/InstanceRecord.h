@@ -144,6 +144,10 @@ public:
 	const SInstancePart* find_part(u16 id) const;
 	u16 add_part(u16 parent, LPCSTR mount, LPCSTR section, float pos = 0.f);   // 0 on failure
 	u32 remove_part(u16 id);                                                       // removes its children too; returns the count
+	// Part props (4a): placement and mod state. A null or empty value clears the key. false when the part is
+	// missing, the key is empty, a cap or the opaque state forbids it, or clearing a key that isn't set.
+	LPCSTR get_part_prop(u16 id, LPCSTR key) const;
+	bool set_part_prop(u16 id, LPCSTR key, LPCSTR value);
 
 	bool operator==(const CSE_InstanceRecord& o) const;
 	bool operator!=(const CSE_InstanceRecord& o) const { return !(*this == o); }
