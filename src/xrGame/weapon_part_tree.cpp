@@ -15,6 +15,92 @@
 #include "ai_space.h"
 #include "script_engine.h"
 
+// The placement props of a part, as one string to compare (4d)
+static xr_string placement_key(const CSE_InstanceRecord& r, u16 id)
+{
+	xr_string k;
+	for (LPCSTR key : { "bone", "offset", "hides", "visual" })
+	{
+		LPCSTR v = r.get_part_prop(id, key);
+		k += v ? v : "\x01";
+		k += '\x02';
+	}
+	return k;
+}
+
+bool CWeaponPartTree::update_placement(const CSE_InstanceRecord& record, IKinematics* gun)
+{
+	if (record.is_opaque() || record.parts.size() != m_nodes.size() || m_nodes.empty())
+		return false;
+
+	struct SMove
+	{
+		SNode* node;
+		weapon_parts::SPlacement pl;
+		xr_string key;
+		u16 root_bone;
+	};
+	xr_vector<SMove> moves;
+	for (const SInstancePart& part : record.parts)
+	{
+		SNode* node = nullptr;
+		for (SNode& n : m_nodes)
+			if (n.id == part.id)
+				node = &n;
+		if (!node || node->parent != part.parent || node->section != part.section)
+			return false;
+		xr_string key = placement_key(record, part.id);
+		if (key == node->key)
+			continue;
+		if (!node->att)
+			return false; // an undrawn part may draw now: the full build works that out
+		LPCSTR vis = record.get_part_prop(part.id, "visual");
+		if (xr_strcmp(vis ? vis : "", node->visual_prop.c_str()))
+			return false; // a new model: rebuild
+
+		SMove m;
+		m.node = node;
+		m.key = key;
+		m.root_bone = BI_NONE;
+		if (!weapon_parts::read_placement(part, m.pl))
+			return false;
+		IKinematics* parent_model = gun;
+		if (node->parent)
+		{
+			parent_model = nullptr;
+			for (SNode& n : m_nodes)
+				if (n.id == node->parent && n.att)
+					parent_model = n.att->Kinematics();
+		}
+		if (!parent_model)
+			return false;
+		const u16 bid = parent_model->LL_BoneID(m.pl.bone);
+		if (bid == BI_NONE)
+			return false; // the full build logs why it isn't drawn
+		m.root_bone = bid;
+		moves.push_back(m);
+	}
+
+	for (SMove& m : moves)
+	{
+		SNode& n = *m.node;
+		n.att->SetPosition(m.pl.pos);
+		n.att->SetRotation(m.pl.hpb);
+		if (n.bone != m.pl.bone)
+		{
+			if (n.parent)
+				n.att->SetParentBone(m.pl.bone.c_str());
+			else
+				n.att->SetParentBone(m.root_bone);
+			n.bone = m.pl.bone;
+		}
+		n.hides = m.pl.hides;
+		n.key = m.key;
+	}
+	++m_moves;
+	return true;
+}
+
 CWeaponPartTree::~CWeaponPartTree()
 {
 	clear();
@@ -324,6 +410,11 @@ void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, 
 					}
 				}
 			}
+			node.key = placement_key(record, part.id);
+			{
+				LPCSTR vis = record.get_part_prop(part.id, "visual");
+				node.visual_prop = vis ? vis : "";
+			}
 			if (!node.att)
 				Msg("~ [weapon parts] %s: part %u [%s] not drawn: %s", owner, u32(part.id), part.section.c_str(), node.reason.c_str());
 			m_nodes.push_back(node);
@@ -350,6 +441,7 @@ void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, 
 	for (SNode& n : m_nodes)
 		hook_up(n);
 	m_view = -1;
+	++m_builds;
 }
 
 void CWeaponPartTree::render(IKinematics* model, const Fmatrix& xform)

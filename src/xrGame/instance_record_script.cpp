@@ -678,6 +678,133 @@ namespace instance_record_script
 		return go_get_part_transform(L, self, id, nullptr, hud);
 	}
 
+	::luabind::object go_get_part_tree_stats(lua_State* L, CScriptGameObject* self)
+	{
+		::luabind::object t = ::luabind::newtable(L);
+		CWeaponPartTree* tree = tree_of(self);
+		t["builds"] = tree ? tree->builds() : 0;
+		t["moves"] = tree ? tree->moves() : 0;
+		return t;
+	}
+
+	// ---- 4d place_parts hooks ---------------------------------------------
+
+	static xr_vector<int> s_place_parts; // registry references, in registration order
+
+	static int find_place_parts(lua_State* L, int arg)
+	{
+		for (u32 i = 0; i < s_place_parts.size(); ++i)
+		{
+			lua_rawgeti(L, LUA_REGISTRYINDEX, s_place_parts[i]);
+			const bool same = !!lua_rawequal(L, -1, arg);
+			lua_pop(L, 1);
+			if (same)
+				return int(i);
+		}
+		return -1;
+	}
+
+	// register_place_parts(func): true when added, false when it isn't a function or is registered already
+	int lua_register_place_parts(lua_State* L)
+	{
+		if (!lua_isfunction(L, 1))
+		{
+			Msg("! [weapon parts] register_place_parts: needs a function");
+			lua_pushboolean(L, 0);
+			return 1;
+		}
+		if (find_place_parts(L, 1) >= 0)
+		{
+			lua_pushboolean(L, 0);
+			return 1;
+		}
+		lua_pushvalue(L, 1);
+		s_place_parts.push_back(luaL_ref(L, LUA_REGISTRYINDEX));
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+
+	// unregister_place_parts(func): true when it was registered
+	int lua_unregister_place_parts(lua_State* L)
+	{
+		const int i = lua_isfunction(L, 1) ? find_place_parts(L, 1) : -1;
+		if (i >= 0)
+		{
+			luaL_unref(L, LUA_REGISTRYINDEX, s_place_parts[i]);
+			s_place_parts.erase(s_place_parts.begin() + i);
+		}
+		lua_pushboolean(L, i >= 0);
+		return 1;
+	}
+
+	bool has_place_parts()
+	{
+		return !s_place_parts.empty();
+	}
+
+	bool run_place_parts(CScriptGameObject* owner, CSE_InstanceRecord& record, LPCSTR owner_name)
+	{
+		if (s_place_parts.empty() || !owner || record.is_opaque() || record.parts.empty())
+			return false;
+		lua_State* L = ai().script_engine().lua();
+		bool changed = false;
+		const xr_vector<int> hooks = s_place_parts; // a hook may register or unregister hooks
+		for (int ref : hooks)
+		{
+			const int top = lua_gettop(L);
+			lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+			::luabind::object(L, owner).pushvalue();
+			get_parts(L, record).pushvalue(); // each hook sees what the ones before it returned
+			if (lua_pcall(L, 2, 1, 0))
+			{
+				Msg("! [weapon parts] %s: a place_parts hook failed, stored placement kept: %s", owner_name,
+					lua_isstring(L, -1) ? lua_tostring(L, -1) : "?");
+				lua_settop(L, top);
+				continue;
+			}
+			if (lua_istable(L, -1))
+			{
+				lua_pushnil(L);
+				while (lua_next(L, -2))
+				{
+					// key at -2 (part id), value at -1 ({bone, offset, hides})
+					if (lua_type(L, -2) == LUA_TNUMBER && lua_istable(L, -1))
+					{
+						const u16 id = u16(lua_tointeger(L, -2));
+						for (LPCSTR key : { "bone", "offset", "hides" })
+						{
+							lua_getfield(L, -1, key);
+							if (lua_type(L, -1) == LUA_TSTRING)
+							{
+								LPCSTR value = lua_tostring(L, -1);
+								LPCSTR now = record.get_part_prop(id, key);
+								xr_string normal, error;
+								if (!*value)
+								{
+									if (now)
+										changed |= record.set_part_prop(id, key, nullptr);
+								}
+								else if (!weapon_parts::normalise_prop(key, value, normal, error))
+									Msg("! [weapon parts] %s: place_parts gave part %u %s = %s, refused: %s", owner_name, u32(id), key, value, error.c_str());
+								else if (!now || xr_strcmp(now, normal.c_str()))
+								{
+									if (record.set_part_prop(id, key, normal.c_str()))
+										changed = true;
+									else
+										Msg("! [weapon parts] %s: place_parts gave a placement for part %u, which isn't on the gun", owner_name, u32(id));
+								}
+							}
+							lua_pop(L, 1);
+						}
+					}
+					lua_pop(L, 1);
+				}
+			}
+			lua_settop(L, top);
+		}
+		return changed;
+	}
+
 	// ---- server item ----------------------------------------------------
 
 	LPCSTR se_get_override(CSE_ALifeInventoryItem* self, LPCSTR key)
@@ -811,4 +938,6 @@ void weapon_parts_registrator::script_register(lua_State* L)
 	lua_register(L, "model_bones", &lua_model_bones);
 	lua_register(L, "bone_bind_transform", &lua_bone_bind_transform);
 	lua_register(L, "weapon_bone_pose", &lua_weapon_bone_pose);
+	lua_register(L, "register_place_parts", &instance_record_script::lua_register_place_parts);
+	lua_register(L, "unregister_place_parts", &instance_record_script::lua_unregister_place_parts);
 }

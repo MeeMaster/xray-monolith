@@ -172,6 +172,7 @@ private:
 	CWeaponPartTree* m_part_tree = nullptr;
 	bool m_part_tree_dirty = false;
 	void parts_rebuild();
+	bool m_in_place_parts = false;     // 4d: a place_parts hook is running
 	xr_vector<shared_str> m_part_hides;   // 4c: gun bones the drawn parts hide
 	xr_vector<shared_str> m_part_unhides; // 4c: bones parts stopped hiding, shown again on the next visibility update
 	virtual void on_shell_attachments(bool create);

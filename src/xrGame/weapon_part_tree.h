@@ -29,6 +29,8 @@ public:
 		script_attachment* att = nullptr; // nullptr: not drawn, see reason
 		xr_vector<shared_str> hides;   // gun bones hidden while this part is drawn (4c)
 		xr_string reason;
+		xr_string key;                 // the placement props it was built from (4d)
+		xr_string visual_prop;         // the visual prop it was built with (4d)
 	};
 
 	~CWeaponPartTree();
@@ -49,6 +51,14 @@ public:
 
 	const xr_vector<SNode>& nodes() const { return m_nodes; }
 	u32 drawn() const;
+
+	// 4d: the placement-only short path. When the record has the same parts as the tree (ids, parents,
+	// sections) and only placement props of drawn parts changed (bone, offset, hides; not visual), moves the
+	// attachments in place and returns true. Anything else returns false and changes nothing: rebuild.
+	bool update_placement(const CSE_InstanceRecord& record, IKinematics* gun);
+
+	u32 builds() const { return m_builds; }
+	u32 moves() const { return m_moves; }
 
 	// ---- script hooks (4c, WEAPON_ENGINE_PLAN.md 8.2). Kept per part id across rebuilds, dropped with the tree
 	// and when the part leaves the record. Not saved: scripts set them again after a load.
@@ -85,4 +95,6 @@ private:
 	u32 m_last_update_frame = 0;
 	xr_map<u16, SOverride> m_overrides;
 	int m_view = -1;               // the view whose bone visibility is applied; -1: apply again
+	u32 m_builds = 0;              // full builds and in-place moves, for tests and debugging
+	u32 m_moves = 0;
 };

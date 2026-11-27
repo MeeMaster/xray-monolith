@@ -9,6 +9,7 @@
 
 class CScriptGameObject;
 class CSE_ALifeInventoryItem;
+class CSE_InstanceRecord;
 
 namespace instance_record_script
 {
@@ -48,6 +49,13 @@ namespace instance_record_script
 	bool go_attach_part_light(CScriptGameObject* self, u16 id, const ::luabind::object& light);
 	bool go_attach_part_light_bone(CScriptGameObject* self, u16 id, const ::luabind::object& light, LPCSTR bone);
 	bool go_detach_part_light(CScriptGameObject* self, u16 id);
+	::luabind::object go_get_part_tree_stats(lua_State* L, CScriptGameObject* self);
+
+	// 4d: the place_parts hooks (WEAPON_ENGINE_PLAN.md 8.1), registered with the global register_place_parts(func).
+	// run_place_parts calls each in registration order with (weapon, parts) and writes the bone, offset and hides
+	// they return into record. true when record changed. owner_name: for log lines.
+	bool has_place_parts();
+	bool run_place_parts(CScriptGameObject* owner, CSE_InstanceRecord& record, LPCSTR owner_name);
 	::luabind::object go_get_part_transform(lua_State* L, CScriptGameObject* self, u16 id, LPCSTR bone, bool hud);
 	::luabind::object go_get_part_transform_origin(lua_State* L, CScriptGameObject* self, u16 id, bool hud);
 

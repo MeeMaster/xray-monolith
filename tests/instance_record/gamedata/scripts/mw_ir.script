@@ -36,6 +36,7 @@
 -- prepare() also places the marked gun's scope (PLACEMENT), and verify() checks the placement.
 --
 -- Engine-drawn parts (4b, WEAPON_ENGINE_PLAN.md 8.2):
+--   run_string mw_ir.moves()          after parts(): 4d placement-only moves and place_parts hooks (moves_clear()).
 --   run_string mw_ir.hooks()          after parts(): script hooks on the test parts (bone visibility by view,
 --                                     part transforms, a light on part A). hooks_clear() detaches the light.
 --   run_string mw_ir.parts()          on the gun in your hands: fits two visible test parts (copies of the gun's
@@ -1140,4 +1141,177 @@ function hooks_clear()
 		w:detach_part_light(p.id)
 	end
 	say("lights detached; run parts_clear() to drop the hides with the parts")
+end
+
+---------------------------------------------------------------------------
+-- moves(): 4d (WEAPON_ENGINE_PLAN.md 8.1, 8.3) on the test parts left by parts():
+--   the placement-only short path, and register_place_parts hooks
+---------------------------------------------------------------------------
+
+local function stats(w)
+	local s = w:get_part_tree_stats()
+	return s.builds, s.moves
+end
+
+local function same_matrix(m, n)
+	local function close(p, q) return math.abs(p.x - q.x) < 1e-4 and math.abs(p.y - q.y) < 1e-4 and math.abs(p.z - q.z) < 1e-4 end
+	return m and n and close(m.c, n.c) and close(m.i, n.i) and close(m.j, n.j) and close(m.k, n.k)
+end
+
+local hooks_added = {}
+
+local function add_hook(f)
+	local ok = register_place_parts(f)
+	if ok then hooks_added[#hooks_added + 1] = f end
+	return ok
+end
+
+function moves_clear()
+	local n = 0
+	for _, f in ipairs(hooks_added) do
+		if unregister_place_parts(f) then n = n + 1 end
+	end
+	hooks_added = {}
+	say(string.format("unregistered %d place_parts hooks", n))
+end
+
+function moves()
+	local w = gun()
+	if not w then return end
+	begin()
+	moves_clear()
+	local a, b
+	for _, p in ipairs(test_parts(w)) do
+		if p.mount == PT .. "a" then a = p.id elseif p.mount == PT .. "b" then b = p.id end
+	end
+	local t = tree_by_id(w)
+	if not check(a and b and t[a] and t[a].drawn and t[b] and t[b].drawn, "the gun has drawn test parts A and B (run parts() first)") then
+		return finish("moves")
+	end
+	local gun_root_bone
+	for _, bn in pairs(model_bones(w:section()) or {}) do
+		if bn.parent == "" then gun_root_bone = bn end
+	end
+	local function up(h) return offset_in_bone(gun_root_bone, { 0, h, 0 }, { 0, 0, 0 }) end
+	local function gap()
+		tree_by_id(w)
+		local pa, pb = w:get_part_transform(a, false), w:get_part_transform(b, false)
+		return pa and pb and dist(pa.c, pb.c) or -1
+	end
+
+	-- 1. Placement-only: moving B along its "rail" moves the attachment, no rebuild
+	local b0, m0 = stats(w)
+	w:set_part_prop(b, "offset", up(0.30))
+	local d = gap()
+	local b1, m1 = stats(w)
+	check(b1 == b0 and m1 == m0 + 1, string.format("moving B is an in-place move: builds %d -> %d, moves %d -> %d", b0, b1, m0, m1))
+	check(math.abs(d - 0.30) < 0.001, string.format("B is 0.30 m from A after the move: %.4f", d))
+
+	-- 2. The short path gives what a full build gives
+	local fast = w:get_part_transform(b, false)
+	local tmp = w:record_add_part(0, PT .. "tmp", "mw_pt_dummy") -- a new part: full build
+	tree_by_id(w)
+	w:record_remove_part(tmp)
+	tree_by_id(w)
+	local b2 = stats(w)
+	check(b2 >= b1 + 2, string.format("adding and removing a part rebuilds the tree: builds %d -> %d", b1, b2))
+	check(same_matrix(fast, w:get_part_transform(b, false)), "B's transform after the in-place move equals the full build's")
+
+	-- 3. A new bone on the parent part, and hides, are in-place too; a new model is not
+	local leaf
+	local pb = model_bones(t[b].model) or {}
+	local is_parent = {}
+	for _, bn in pairs(pb) do is_parent[bn.parent] = true end
+	for name, bn in pairs(pb) do
+		if bn.parent ~= "" and not is_parent[name] then leaf = name break end
+	end
+	local _, m2 = stats(w)
+	w:set_part_prop(b, "bone", leaf)
+	t = tree_by_id(w)
+	local _, m3 = stats(w)
+	check(m3 == m2 + 1 and t[b].drawn and t[b].bone == leaf, "B onto A's bone " .. tostring(leaf) .. " is an in-place move")
+	w:set_part_prop(b, "bone", t[a].bone)
+	w:set_part_prop(b, "hides", leaf)
+	tree_by_id(w)
+	local _, m4 = stats(w)
+	check(m4 == m3 + 1, "B back on the root bone, and a hides change, are in-place moves")
+	local b_visual = w:get_part_prop(b, "visual") -- parts() gave B its model through this prop
+	local b5 = stats(w)
+	w:set_part_prop(b, "visual", t[b].model .. "") -- the same model, given as a prop: a visual change
+	tree_by_id(w)
+	local b6 = stats(w)
+	check(b6 == b5 + 1, "a visual change rebuilds the tree")
+	w:set_part_prop(b, "visual", b_visual)
+	w:set_part_prop(b, "hides", nil)
+	tree_by_id(w)
+
+	-- 4. place_parts hooks
+	local seen_a, seen_b, seen_offset
+	local function hook1(wpn, parts)
+		seen_a = 0
+		local out = {}
+		for _, p in pairs(parts) do
+			seen_a = seen_a + 1
+			if p.id == b then out[p.id] = { offset = up(0.20) } end
+		end
+		return out
+	end
+	local function hook2(wpn, parts)
+		seen_b = wpn and wpn:id()
+		for _, p in pairs(parts) do
+			if p.id == b then seen_offset = p.props.offset end
+		end
+		return { [b] = { offset = up(0.22) } }
+	end
+	local function broken() error("mw_ir: a broken hook, on purpose") end
+	local function bad() return { [b] = { offset = "not numbers" }, [9999] = { bone = "x" } } end
+	check(add_hook(hook1) and not register_place_parts(hook1), "registering a hook, and again is refused")
+	check(not register_place_parts(42), "registering something that isn't a function is refused")
+	add_hook(broken)
+	add_hook(hook2)
+	add_hook(bad)
+	-- any change of the parts reruns the hooks; nudge A
+	local _, m5 = stats(w)
+	w:set_part_prop(a, "offset", offset_in_bone(gun_root_bone, { 0, 0.121, 0 }, { 90, 0, 0 }))
+	d = gap()
+	local _, m6 = stats(w)
+	check(seen_a and seen_a >= 2, "the hook was called with the gun's parts: " .. tostring(seen_a))
+	check(seen_b == w:id(), "the hook got the weapon")
+	check(seen_offset == up(0.20), "the second hook saw the first one's offset: " .. tostring(seen_offset))
+	check(math.abs(d - 0.22) < 0.001, string.format("hooks run in order, the last one wins: B is %.4f m from A", d))
+	check(w:get_part_prop(b, "offset") ~= nil and m6 == m5 + 1, "the result went into the record, still an in-place move")
+
+	moves_clear()
+	w:set_part_prop(b, "offset", up(0.24))
+	w:set_part_prop(a, "offset", offset_in_bone(gun_root_bone, { 0, 0.12, 0 }, { 90, 0, 0 }))
+	d = gap()
+	check(math.abs(d - 0.24) < 0.001, "without hooks B goes back to 0.24 m")
+	finish("moves")
+	say("the log above should show one failed place_parts hook and two refused values per rebuild while the hooks were on.")
+end
+
+-- nudge(h): puts test part B h metres above part A (0.24 by default) and leaves it there, through the in-place path,
+-- so a move can be seen. Run it a few times with different values, e.g. mw_ir.nudge(0.4), mw_ir.nudge(0.1).
+function nudge(h)
+	local w = gun()
+	if not w then return end
+	local b
+	for _, p in ipairs(test_parts(w)) do
+		if p.mount == PT .. "b" then b = p.id end
+	end
+	if not b then
+		say("no test part B on the gun in your hands: run parts() first")
+		return
+	end
+	local root_bone
+	for _, bn in pairs(model_bones(w:section()) or {}) do
+		if bn.parent == "" then root_bone = bn end
+	end
+	h = tonumber(h) or 0.24
+	local _, m0 = stats(w)
+	w:set_part_prop(b, "offset", offset_in_bone(root_bone, { 0, h, 0 }, { 0, 0, 0 }))
+	tree_by_id(w)
+	local builds, m1 = stats(w)
+	say(string.format("part B is now %.2f m above part A (%s, %d builds, %d moves)", h,
+		m1 > m0 and "moved in place" or "no move", builds, m1))
 end

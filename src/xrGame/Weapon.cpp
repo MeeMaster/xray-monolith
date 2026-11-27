@@ -39,6 +39,7 @@
 #include "pch_script.h"
 #include "script_game_object.h"
 #include "weapon_part_tree.h"
+#include "instance_record_script.h"
 #include "ai/stalker/ai_stalker.h"
 
 #define WEAPON_REMOVE_TIME		60000
@@ -1171,6 +1172,8 @@ BOOL CWeapon::net_Spawn(CSE_Abstract* DC)
 
 void CWeapon::parts_update()
 {
+	if (m_in_place_parts)
+		return; // a place_parts hook is running; the rebuild that called it finishes the job
 	if (m_part_tree_dirty)
 		parts_rebuild();
 	if (m_part_tree)
@@ -1180,6 +1183,22 @@ void CWeapon::parts_update()
 void CWeapon::parts_rebuild()
 {
 	m_part_tree_dirty = false;
+	string128 owner;
+	xr_sprintf(owner, "%s [%u]", cNameSect().c_str(), ID());
+
+	// 4d: place_parts hooks first; what they change goes back into the record, so the gun draws the same
+	// without them. A placement-only change keeps the config, so this is no reload.
+	if (instance_record_script::has_place_parts() && !instance_record().parts.empty())
+	{
+		CSE_InstanceRecord record = instance_record();
+		m_in_place_parts = true;
+		const bool changed = instance_record_script::run_place_parts(lua_game_object(), record, owner);
+		m_in_place_parts = false;
+		if (changed)
+			set_instance_record(record);
+		m_part_tree_dirty = false; // whatever the hooks or set_instance_record marked is handled below
+	}
+
 	IKinematics* gun = Visual() ? Visual()->dcast_PKinematics() : nullptr;
 	if (instance_record().parts.empty())
 		xr_delete(m_part_tree);
@@ -1187,9 +1206,9 @@ void CWeapon::parts_rebuild()
 	{
 		if (!m_part_tree)
 			m_part_tree = xr_new<CWeaponPartTree>();
-		string128 owner;
-		xr_sprintf(owner, "%s [%u]", cNameSect().c_str(), ID());
-		m_part_tree->build(instance_record(), gun, owner, this);
+		// 4d: a placement-only change moves the attachments in place; anything else rebuilds the tree
+		if (!m_part_tree->update_placement(instance_record(), gun))
+			m_part_tree->build(instance_record(), gun, owner, this);
 	}
 
 	// 4c: the gun bones the parts hide
