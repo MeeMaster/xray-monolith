@@ -86,6 +86,9 @@ void CHudItem::Load(LPCSTR section)
 	hud_sect = pSettings->r_string(section, "hud");
 	m_animation_slot = pSettings->r_u32(section, "animation_slot");
 
+	// Every LoadSound appends. All of a weapon's sounds load after this point, so starting from an empty
+	// collection makes a second Load (ReloadConfig, WEAPON_ENGINE_PLAN.md 6) give the same set, not a doubled one
+	m_sounds.Clear();
 	m_sounds.LoadSound(section, "snd_bore", "sndBore", true);
 
 	m_hud_fov_add_mod = READ_IF_EXISTS(pSettings, r_float, section, "hud_fov_addition_modifier", 0.f);

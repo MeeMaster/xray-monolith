@@ -150,6 +150,10 @@ void CWeaponMagazined::Load(LPCSTR section)
 
 	m_sSndShotCurrent = IsSilencerAttached() ? "sndSilencerShot" : "sndShot";
 
+	// Only set below when the section has them; a second Load from a section without them must not keep the
+	// old ones (3a)
+	m_sSilencerFlameParticles = m_sSilencerSmokeParticles = NULL;
+
 	//звуки и партиклы глушителя, еслит такой есть
 	if (m_eSilencerStatus == ALife::eAddonAttachable || m_eSilencerStatus == ALife::eAddonPermanent ||
 		!m_bUseEngineAttachments)
@@ -201,6 +205,8 @@ void CWeaponMagazined::Load(LPCSTR section)
 	else
 	{
 		m_bHasDifferentFireModes = false;
+		m_aFireModes.clear();
+		m_iPrefferedFireMode = -1;
 	}
 	LoadSilencerKoeffs();
 	LoadScopeKoeffs();
@@ -2316,6 +2322,44 @@ bool CWeaponMagazined::instance_runtime_is_default(const SInstanceRuntime& rt) c
 	// Load starts in the last listed mode
 	const u8 default_mode = m_aFireModes.empty() ? 0 : u8(m_aFireModes.size() - 1);
 	return rt.fire_mode == default_mode && inherited::instance_runtime_is_default(rt);
+}
+
+void CWeaponMagazined::LoadSignature(xr_string& out) const
+{
+	inherited::LoadSignature(out);
+	string128 buf;
+	xr_sprintf(buf, " fire_modes=%u cur_mode=%d silencer_fx=%s", u32(m_aFireModes.size()), m_iCurFireMode,
+		(m_sSilencerFlameParticles && *m_sSilencerFlameParticles) ? m_sSilencerFlameParticles : "-");
+	out += buf;
+}
+
+// 3b: the fire mode is kept by value, so it survives a list that changed order or size
+void CWeaponMagazined::runtime_snapshot(SWeaponRuntimeSnapshot& s) const
+{
+	inherited::runtime_snapshot(s);
+	s.has_fire_mode = m_bHasDifferentFireModes && m_iCurFireMode >= 0 && m_iCurFireMode < int(m_aFireModes.size());
+	if (s.has_fire_mode)
+		s.fire_mode = m_aFireModes[m_iCurFireMode];
+}
+
+void CWeaponMagazined::runtime_restore(const SWeaponRuntimeSnapshot& s, SWeaponRestoreReport& r)
+{
+	inherited::runtime_restore(s, r);
+	if (!s.has_fire_mode || m_aFireModes.empty())
+	{
+		r.fire_mode_kept = !s.has_fire_mode;
+		return;
+	}
+	// Load already selected the default mode; keep it when the old one is gone
+	int found = -1;
+	for (u32 i = 0; i < m_aFireModes.size(); ++i)
+		if (m_aFireModes[i] == s.fire_mode)
+			found = int(i);
+	r.fire_mode_kept = found >= 0;
+	if (found >= 0)
+		m_iCurFireMode = found;
+	if (m_bHasDifferentFireModes && smart_cast<CActor*>(H_Parent()))
+		SetQueueSize(GetCurrentFireMode());
 }
 
 void CWeaponMagazined::instance_runtime_apply(const SInstanceRuntime& rt)

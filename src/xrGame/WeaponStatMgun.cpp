@@ -184,6 +184,7 @@ void CWeaponStatMgun::Load(LPCSTR section)
 	inheritedPH::Load(section);
 	inheritedShooting::Load(section);
 
+	m_sounds.Clear(); // LoadSound appends; keep a second Load from doubling the sounds (3a)
 	m_sounds.LoadSound(section, "snd_shoot", "sndShot", false, SOUND_TYPE_WEAPON_SHOOTING);
 
 #ifdef STATIONARYMGUN_NEW

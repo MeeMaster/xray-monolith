@@ -51,6 +51,41 @@ struct SafemodeAnm
 	float power, speed;
 };
 
+// Change 3b (WEAPON_ENGINE_PLAN.md 6): the live state a rebuild carries over. Ammo is kept by section name, not by
+// index, so it survives a changed ammo list. Rifle and launcher rounds are kept apart whatever mode the gun is in.
+struct SWeaponRuntimeSnapshot
+{
+	xr_vector<shared_str> rounds;   // rifle rounds, m_magazine order: the last one fires next
+	shared_str ammo_type;           // selected rifle ammo
+	shared_str next_ammo_type;      // ammo chosen for the next reload, empty when none
+	xr_vector<shared_str> grenades; // launcher rounds
+	shared_str grenade_type;        // selected launcher ammo
+	bool has_fire_mode = false;
+	int fire_mode = 1;              // the mode itself (1, 3, -1), looked up again in the new list
+	bool gl_mode = false;
+	u8 cur_scope = 0;
+	u8 addon_flags = 0;
+	shared_str scope_name;          // attachable addons that are attached, by item section
+	shared_str silencer_name;
+	shared_str launcher_name;
+	float condition = 1.f;
+	BOOL visible = TRUE;
+	bool zoomed = false;
+};
+
+// What a restore could not keep. Rounds and grenades that no longer fit went to the owner's inventory.
+struct SWeaponRestoreReport
+{
+	u32 rounds_unloaded = 0;
+	u32 grenades_unloaded = 0;
+	bool ammo_type_kept = true;
+	bool fire_mode_kept = true;
+	bool gl_mode_kept = true;
+	xr_string unloaded; // "section x count" list, for logs and the test command
+	xr_string addons_removed; // attached addons the new config no longer takes, given back to the owner
+	xr_string ammo_dropped;   // ammo sections in the config that do not exist
+};
+
 class CWeapon : public CHudItemObject,
                 public CShootingObject
 {
@@ -337,6 +372,39 @@ public:
 	virtual bool instance_runtime_is_default(const SInstanceRuntime& rt) const;
 	void instance_runtime_sync();
 	u32 m_instance_sync_time = 0;
+
+	// Change 3a/3b (WEAPON_ENGINE_PLAN.md 6): runs Load again on the live weapon from its config section and puts
+	// back the live state, clamped to the new config (runtime_snapshot / runtime_restore). ReloadConfig (3c) builds
+	// on it.
+	void RerunLoad(SWeaponRestoreReport* report = nullptr);
+	// 3c: ReloadConfig requests. A change to the config overrides queues the weapon once; the queue
+	// (CLevel::OnFrame) runs RerunLoad when the weapon can be rebuilt, so several changes give one rebuild.
+	bool can_reload_config() const;
+	void request_reload_config();
+protected:
+	virtual void on_instance_config_changed() { request_reload_config(); }
+public:
+	// 3b. Snapshot reads the live state. Prepare runs just before Load and puts the gun in the layout Load expects
+	// (rifle mode). Restore runs after Load: it rebuilds the magazines from the snapshot, keeps what the new config
+	// still accepts and unloads the rest into the owner's inventory.
+	virtual void runtime_snapshot(SWeaponRuntimeSnapshot& s) const;
+	virtual void runtime_prepare_load() {}
+	virtual void runtime_restore(const SWeaponRuntimeSnapshot& s, SWeaponRestoreReport& r);
+	// Fills a magazine from section names: rounds whose section is in `types` are kept, up to `capacity`, the
+	// ones that fire next first. The rest go to `unload`.
+	void runtime_fill_magazine(xr_vector<CCartridge>& mag, const xr_vector<shared_str>& types,
+		const xr_vector<shared_str>& rounds, u32 capacity, xr_vector<shared_str>& unload) const;
+	// Puts rounds into the owner's inventory: existing boxes are topped up first, then new boxes are spawned.
+	// Without an owner the boxes are spawned where the weapon is.
+	void unload_rounds_to_owner(const xr_vector<shared_str>& rounds, xr_string* log);
+	// Drops ammo sections that do not exist. When none is left, the list is read again from the base section.
+	void runtime_check_ammo_list(xr_vector<shared_str>& types, LPCSTR key, xr_string& log) const;
+	// Attached addons the new config no longer takes are taken off and given to the owner
+	void runtime_restore_addons(const SWeaponRuntimeSnapshot& s, SWeaponRestoreReport& r);
+	static int find_ammo_type(const xr_vector<shared_str>& types, const shared_str& sect);
+	// What Load produces, on one line: list sizes that must not grow and values that must not change when
+	// Load runs again on the same section
+	virtual void LoadSignature(xr_string& out) const;
 	//èíèöèàëèçàöèÿ ñâîéñòâ ïðèñîåäèíåííûõ àääîíîâ
 	virtual void InitAddons();
 

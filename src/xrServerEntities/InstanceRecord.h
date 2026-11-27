@@ -10,10 +10,19 @@ class NET_Packet;
 
 struct SInstanceProp
 {
+	enum : u8
+	{
+		// 3c (WEAPON_ENGINE_PLAN.md 6.2): a state value. Stored and saved, but never in the generated section,
+		// so changing it rebuilds nothing. Only overrides use flags; part props always keep 0.
+		STATE = 1 << 0,
+	};
+
 	shared_str key;
 	shared_str value;
+	u8 flags = 0;
 
-	bool operator==(const SInstanceProp& o) const { return key == o.key && value == o.value; }
+	bool is_state_value() const { return (flags & STATE) != 0; }
+	bool operator==(const SInstanceProp& o) const { return key == o.key && value == o.value && flags == o.flags; }
 };
 
 typedef xr_vector<SInstanceProp> InstanceProps;
@@ -58,7 +67,8 @@ class CSE_InstanceRecord
 public:
 	// Format version this build writes. Records with a higher version are kept as raw bytes and
 	// written back unchanged, so a save made by a newer build survives a round trip here.
-	enum : u8 { VERSION = 1 };
+	// 1: first format. 2: a flags byte per override (3c); a version 1 record reads every override as config.
+	enum : u8 { VERSION = 2 };
 
 	// Hard caps, so a record can never push a spawn packet near its 16 KB limit
 	enum : u32
@@ -92,10 +102,15 @@ public:
 	// Size write() would produce
 	u32 byte_size() const;
 
-	// Overrides
+	// Overrides. One namespace: setting a key with the other kind moves it (3c).
 	LPCSTR get_override(LPCSTR key) const;
-	bool set_override(LPCSTR key, LPCSTR value);   // false when a cap or the opaque state forbids it
+	bool set_override(LPCSTR key, LPCSTR value, bool state = false);   // false when a cap or the opaque state forbids it
 	bool clear_override(LPCSTR key);
+	bool is_state_override(LPCSTR key) const;
+	bool has_config_overrides() const;
+	// True when both records give the same generated section: the same config overrides in the same order.
+	// State overrides and everything else are ignored.
+	bool same_config(const CSE_InstanceRecord& o) const;
 
 	// Parts
 	SInstancePart* find_part(u16 id);
@@ -113,6 +128,6 @@ private:
 	xr_vector<u8> m_opaque;    // version byte, size and body of a record from a newer format
 
 	void write_body(xr_vector<u8>& out) const;
-	bool read_body(const u8* data, u32 size);
+	bool read_body(const u8* data, u32 size, u8 version);
 	bool fits() const;
 };

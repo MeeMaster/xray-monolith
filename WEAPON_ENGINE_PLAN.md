@@ -2,7 +2,7 @@
 
 How to change xray-monolith so that every weapon is an independent object: one base model, parts as separate models fitted at runtime, and a per-weapon record that rebuilds the gun on save and load. It builds on [WEAPON_MODELS.md](WEAPON_MODELS.md), [WEAPON_OBJECTS.md](WEAPON_OBJECTS.md) and the Part_bench mod (`../part_bench`, its `AGENTS.md` and `mw_*` scripts).
 
-Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Phase 2: 2a (the record type) tested, 2b (saving it) tested, 2c (game-side copy and sync) tested (sections 4.1–4.3), 2d (runtime block) fire mode tested (section 4.4), 2e (dynamic sections) tested (section 5.1), 2f (generated sections) tested, 2g (reading them) tested (sections 5.2, 5.3), 2h (script API, first slice) and 2i (tests) tested (section 14). Phase 2 is complete. Sizes are estimates from reading the code.
+Engine paths are relative to `src/`. Status: **plan**, with W1 change 1a implemented and tested in game (section 7.2), 1b implemented and tested in game (section 7.3), 1c implemented and run (section 7.4), 1d implemented and partly tested in game (section 7.3), 1e implemented and built (section 7.5), 1f skipped, and 1g implemented and tested in game (section 7.5). Phase 2: 2a (the record type) tested, 2b (saving it) tested, 2c (game-side copy and sync) tested (sections 4.1–4.3), 2d (runtime block) fire mode tested (section 4.4), 2e (dynamic sections) tested (section 5.1), 2f (generated sections) tested, 2g (reading them) tested (sections 5.2, 5.3), 2h (script API, first slice) and 2i (tests) tested (section 14). Phase 2 is complete. Phase 3: 3a (`Load` safe to run again) tested, 3b (runtime snapshot and clamped restore) tested (section 6.1); 3c (state values and the reload flag) tested (section 6.2); 3d (stacked modifiers) planned (section 6.3). Sizes are estimates from reading the code.
 
 ---
 
@@ -262,8 +262,9 @@ Built in this order, later layers overriding earlier ones:
 1. The base section.
 2. **Role data from parts** (section 9): the main sight's zoom and scope keys, the muzzle's silencer flags, fire point and sounds, the launcher's GL keys.
 3. **Overrides** from the record.
+4. **Stacked modifiers** (`stat_mods` from upgrades and parts, and script modifiers), combined per key (section 6.3).
 
-Part **modifiers** are not written here. They are applied after `Load` through the upgrade handlers (section 6.2), so additive keys add instead of overwrite.
+Part_bench-style part **modifiers**, which name upgrade sections, are not written here. They are applied after `Load` through the upgrade handlers (section 6.4), so additive keys add instead of overwrite.
 
 A matching **generated HUD section** `[<hud>_i<id>]` carries the computed aim offsets (W8) and, later, hand-pose animation keys if poses ever move into the engine.
 
@@ -309,7 +310,7 @@ Follow WEAPON_OBJECTS.md §12.7. In short:
 2. Save the runtime state: ammo count and per-round types, ammo type, fire mode, GL mode and grenades, condition, weapon state, zoom.
 3. Make `Load` safe to re-run: clear `m_ammoTypes`, `m_scopes`, `m_aFireModes`, `bullets_bones`, `m_ammoTypes2`, sound collections and `m_UIScope` before reloading.
 4. Rebuild the generated section (W3) and run `Load` + `reload` on it.
-5. Replay mechanic upgrades (`net_Spawn_install_upgrades`), then apply part modifiers (6.2).
+5. Replay mechanic upgrades (`net_Spawn_install_upgrades`), then apply part modifiers (6.4).
 6. Restore the runtime state, clamped to the new config. If the magazine got smaller or the calibre changed, unload the extra rounds into the owner's inventory.
 7. `InitAddons()` and bone visibility, now driven by parts (W6, W7).
 8. Rebuild the HUD binding if the HUD section changed: delete `m_attachable`, then `player_hud::attach_item` again while the gun is shown.
@@ -319,11 +320,128 @@ Follow WEAPON_OBJECTS.md §12.7. In short:
 
 18 classes override `Load`. The real work is in `CWeapon`, `CWeaponMagazined`, `CWeaponMagazinedWGrenade`, `CWeaponShotgun`/`CWeaponAutomaticShotgun`, `CWeaponStatMgun` and `CHudItem`. About 300–500 lines.
 
-### 6.2 Part modifiers
+**Implemented 2026-11-25 (3a, `Load` safe to run again), tested in game 2026-11-26.** Every `Load` in the weapon chain was read. Most only assign fields; these appended or kept stale values and now start clean:
+- **Sounds.** Every `LoadSound` appends, so a second `Load` doubled every weapon sound. `HUD_SOUND_COLLECTION` and `HUD_SOUND_COLLECTION_LAYERED` gained `Clear()`, which stops and frees the sounds. `CHudItem::Load` clears before loading; all weapon sounds load after it. `CWeaponStatMgun::Load` clears its own collection. The layered destructor now uses `Clear()`; it used to run each collection's destructor twice.
+- **`CWeapon::Load`** empties `m_scopes`, `bullets_bones` and `bullet_cnt`, and resets `bHasBulletsToHide`, `m_bTriStateReload` and `IsCustomReloadAvaible`, which the shotguns only set when the key exists. The permanent-scope branch frees the old `m_UIScope` before creating one. `InitAddons` and `UpdateUIScope` already did.
+- **`CWeaponMagazined::Load`** resets the silencer particle names, and clears `m_aFireModes` and the preferred mode when the section has no `fire_modes`.
+- **`CInventoryItem::Load`** clears the generated section name when it loads from the base section.
+- **Already safe:** `m_ammoTypes`, `m_ammoTypes2` and the fire mode list (when present) were cleared already. `CShootingObject`, `CRocketLauncher`, `CHitImmunity`, the first-bullet controller and the knife, binoculars, pistol and revolver loaders only assign values.
+- **`CWeapon::RerunLoad()`** runs `Load` again from `config_section()` and puts back what `Load` resets but the gun still has: the round count, the rounds' types and the fire mode (through the 2d runtime block), and visibility (`CObject::Load` hides the object). Launcher mode is not handled yet: switching modes swaps the rifle and grenade lists and magazine sizes, which a fresh `Load` doesn't know about (3b).
+- **Test:** console `reload_load_test [times]` (default 5) on the weapon in hands. It compares `LoadSignature()` before and after each run (list sizes, sound count, scope window, magazine size, rpm, dispersion, hit power, zoom, fire modes, silencer particles, grenade types) and checks rounds, types, fire mode and visibility. It refuses in launcher mode.
+
+**Implemented 2026-11-26 (3b, runtime snapshot and clamped restore), tested in game 2026-11-27.** Tested: magazine clamp (30 → 10, 20 rounds to the inventory), calibre change (all rounds to the inventory, ammo type reset), a missing ammo section (dropped, base list used), launcher removed by config (launcher and grenade to the inventory), launcher mode kept across a rebuild with the grenade still loaded and firing normally, fire mode kept. `RerunLoad` now carries the live state across `Load` by section name instead of by index, so it survives a changed config:
+- **`SWeaponRuntimeSnapshot`** (`Weapon.h`, memory only, never saved): rifle rounds and launcher rounds as ammo section names in magazine order, the selected rifle and grenade ammo, the ammo picked for the next reload, the fire mode by value (1, 3, -1), launcher mode, `m_cur_scope`, condition, visibility and zoom. `runtime_snapshot` is virtual: `CWeapon` reads the magazine and types, `CWeaponMagazined` adds the fire mode, `CWeaponMagazinedWGrenade` sorts rifle and launcher rounds apart whatever mode the gun is in.
+- **Order:** snapshot → leave aim (`OnZoomOut`; zoom keeps effectors and factors `Load` replaces) → `runtime_prepare_load` → `Load(config_section())` → `runtime_restore` → visibility → `instance_runtime_sync`.
+- **Launcher mode.** `SwapLauncherLayout()` is the list and magazine swap of `PerformSwitchGL` alone, without zoom type, scope UI, rocket or sounds. Prepare swaps a gun in launcher mode back to the rifle layout, so `Load` sees what a fresh spawn sees. Restore fills both magazines and swaps back if the new config still has a launcher. The zoom type and the fake grenade were never touched, so they still match. If the launcher is gone, the mode is lost: the zoom type goes back as `PerformSwitchGL` does and the grenade is unloaded.
+- **Clamping** (`runtime_fill_magazine`): a round is kept when its section is in the new ammo list, up to the new magazine size. The rounds that fire next are kept, the bottom ones are dropped. The launcher holds one grenade, none without a launcher. The selected ammo stays when the new list has it, otherwise the first type; the same for grenades. The next-reload ammo is dropped when gone. The fire mode is found by value, otherwise `Load`'s default. `m_cur_scope` is reset when out of range. Condition is put back.
+- **Unloading** (`unload_rounds_to_owner`): as `UnloadMagazine` does, an existing box in the owner's inventory is topped up first, then new boxes are spawned (full boxes, then the rest). Unlike `SpawnAmmo` it works with an empty ammo list and without an owner: the boxes are then spawned where the weapon is. When the last grenade goes, the fake grenade is unloaded with `UnloadRocket`.
+- **`SWeaponRestoreReport`** says what was unloaded and whether the ammo type, fire mode and launcher mode were kept.
+- **Upgrades are replayed** (moved forward from 3c): right after `Load`, `net_Spawn_install_upgrades(m_upgrades)`, in rifle layout as on spawn. First test run (2026-11-26) showed why it can't wait: an upgrade can set `grenade_launcher_status`, so without the replay a gun whose launcher came from an upgrade lost it on `Load`. The launcher vanished, its flag stayed set, the item was not given back and nothing could be attached again. The replay must call `CInventoryItem::net_Spawn_install_upgrades` by name: `CWeaponMagazinedWGrenade` overrides it with an empty body (its `net_Spawn` installs upgrades itself), so the virtual call installed nothing on any launcher-capable gun (trace 2026-11-27: `gl_status` 2 → 0 after `Load`, unchanged after the replay, dispersion too).
+- **`InitAddons` + `UpdateAddonsVisibility` after the replay, always** (moved forward from 3c, as `net_Spawn` does). `Load` runs `InitAddons` before the replay, while an upgrade-given addon status is still the base one, so values read from the attached addon were skipped. Found in game: `CRocketLauncher::Load` left the gun's own `launch_speed` and the launcher's `grenade_vel` was never read, so grenades dropped at the feet. `LoadSignature` now includes `launch_speed`.
+- **Addons** (`runtime_restore_addons`): the snapshot keeps the addon flags and the item sections of attached attachable addons. After `Load` the scope is found again by name in the new `m_scopes`. An attached scope, silencer or launcher that the new config no longer takes (status not attachable, or another item name) has its flag cleared and goes to the owner's inventory through `CInventoryItem::Detach(item, true)`. Without an owner it is lost, with a log line.
+- **Missing ammo sections** (`runtime_check_ammo_list`): a `ammo_class` or `grenade_class` entry that is not a section is dropped with a log line instead of crashing in `CCartridge::Load` (first test run: `ammo_class = 9x19`). If nothing valid is left, the list is read from the base section.
+- **Not covered:** the weapon state (reloading, firing) is not touched; the idle gate is 3d. Overrides are not checked when they are set; a bad value only shows on the next rebuild or spawn.
+- **Tests:** `reload_load_test` now runs in launcher mode too and compares the whole snapshot (rounds by section, grenades, types, fire mode, launcher mode, scope, condition) and reports any unload, which must not happen on the same config. New console `rebuild_test` runs one rebuild from the current config section and prints the config signature and state before and after, what was unloaded, and whether the ammo type, fire mode and launcher mode were kept. Set overrides first (`ammo_mag_size`, `ammo_class`, `fire_modes`, `grenade_class`) to test the clamping.
+
+### 6.2 State values and the reload flag (3c)
+
+**Goal:** an item can hold values that change often (battery charge, filter wear, a counter) without rebuilding its config or the object. Only values that change how the engine treats the object rebuild it.
+
+Today every override is config: changing one rebuilds the generated section (2f) and sends the whole record, even when nothing reads the key from the section. 3c splits overrides into two kinds with one flag:
+
+```lua
+item:set_override(key, value [, reload = true])
+```
+
+| `reload` | Kind | Stored and saved | In the generated section | On change |
+|---|---|---|---|---|
+| `true` (default) | **config** | yes | yes | rebuild the section; on a weapon, request `ReloadConfig` (queued until idle, step 1 above); other items pick it up on their next spawn |
+| `false` | **state** | yes | no | update the in-memory record only; no section rebuild, no reload |
+
+- **Record.** Each override carries a u8 flags byte (bit 0 = state). Bump the record version. Older records load with every override as config, which is what they were. The newer-version rule (4.1) is unchanged.
+- **One namespace.** A key is either config or state. Setting a key with the other flag moves it, and moving it out of or into the section counts as a config change. `get_override` and `get_overrides` read both kinds; `get_overrides` gains an optional filter (`"config"`, `"state"`) and the kind is available as `is_state_override(key)`.
+- **Never seen by the engine's config reads.** State keys are skipped by `instance_section::build`, so `pSettings` reads, `Load` and the upgrade handlers never see them. An item whose overrides are all state gets no generated section.
+- **Cheap sync.** A state change marks the record dirty instead of sending at once. The dirty record goes to the server copy at most every 0.5 s from `UpdateCL`, and always from `save` and `net_Destroy`, the same scheme as the 2d runtime block. A config change still sends at once. While the item is offline the edit goes straight to the server copy, as in 2h.
+- **Batching config changes.** Several `reload = true` writes in one frame give one section rebuild and one `ReloadConfig`, not one per key.
+- **Clearing.** `set_override(key, nil)` and `clear_override(key)` clear either kind; clearing a config key rebuilds the section, clearing a state key does not.
+
+**Test:** extend `mw_ir.api()`: a state key survives save/load, a level change and offline and back; it never appears in the generated section; 1000 state writes in a frame send at most one event and build no section; moving a key between kinds adds it to and removes it from the section; an old-version record loads with every override as config.
+
+**Done when:** a battery item draining every frame through `set_override("charge", c, false)` costs no section rebuilds and at most two record events a second, and its charge survives save/load and going offline.
+
+**Implemented 2026-11-27 (3c), tested in game 2026-11-27:** `instance_record_test`, `api()` and the `prepare()`/`verify()` round (save/load, NPC, level change, offline edit) all pass. Two test-script bugs were fixed on the way: `api()` now reads the section before its build-counter baseline (the preceding clean-up left a rebuild pending), and uses its own state key `mw_ir_api_charge` so it no longer wipes the marked gun's `mw_ir_charge`.
+- **Record** (`InstanceRecord`): `SInstanceProp::flags`, bit 0 = `STATE` (`is_state_value()`; `is_state` is a monster AI macro). `VERSION` 2 writes a flags byte after each override's value; part props carry none. A version 1 record reads with every override as config. `set_override(key, value, state)` moves a key between kinds; new `is_state_override`, `has_config_overrides`, and `same_config(o)`, which compares only the config overrides, in order. The self test (`instance_record_test`) covers the round trip, moving kinds, and a hand-made version 1 record.
+- **Section** (`instance_section`): state keys are skipped, and `needed()` asks for config overrides only.
+- **Item** (`CInventoryItem::set_instance_record(record, defer_send)`):
+  - A config change sends at once, marks the section stale and calls `on_instance_config_changed()`. `config_section()`, `instance_section()` and `has_instance_section()` rebuild a stale section on read, so several writes in a row build it once.
+  - Any other change sends at once unless `defer_send` is set. Script state edits set it. The record is then only marked unsent and goes out from `UpdateCL` at most every 0.5 s, and always from `save` and `net_Destroy`. Those two write it straight into the server entity through the simulator's registry, with no event that could arrive after the save or the object is gone.
+  - Counters `s_instance_sends` and `s_instance_builds` are for the tests.
+- **ReloadConfig queue** (step 1 of 6, and the gate 3d planned): `CWeapon::on_instance_config_changed` queues the weapon's ID once. `weapon_reload_config_queue_update()` runs from `CLevel::OnFrame` and calls `RerunLoad` when the weapon is idle or hidden, not pending and not aiming. A busy weapon waits; a destroyed one is dropped. Several config writes in a frame give one rebuild. Each rebuild logs `* [reload config]`.
+- **Script:** `set_override(key, value, reload)` on the game object and the server object; `reload = false` stores a state value and defers the send, and so does clearing a state key. Also `get_overrides(filter)` with `"config"` or `"state"`, `is_state_override(key)`, and `record_counters()` → `{sends, builds}` for every item.
+- **Tests** (`mw_ir.script`): `api()` adds the 3c checks: kind and filter, not in the section, 1000 state writes sending at most once and building nothing, moving keys in and out of the section, three config writes building once, and clearing. `prepare()` adds the state value `mw_ir_charge`, and `verify()` checks it (still state, not in the section) wherever the gun is.
+- **Not covered:** other items than weapons pick up a config change on their next spawn, as planned.
+
+### 6.3 Stacked modifiers (3d)
+
+**Goal:** several sources (upgrades, parts, scripts) can each nudge the same parameter, such as `rpm +10%` from one upgrade and `rpm -5%` from another, and the engine combines them into one final value. This works for any numeric key an item reads from its config, on any item class, with no new C++ per key.
+
+**Why not the upgrade handlers.** The engine already adds upgrade values (`process_if_exists`, `inventory_item_inline.h:37`, `value = value + ...`), but:
+- only flat amounts, no percentages;
+- only the keys listed in the `install_upgrade_*` handlers (about 50 for weapons, a separate list for outfits); any other key is ignored;
+- some keys are replaced (`process_if_exists_set`: `hit_power`, `ammo_class`, `scope_status`), so with several upgrades the order decides;
+- the handlers change fields in place, so a contribution can't be taken back without a full rebuild.
+
+**Approach.** `instance_section::build` combines every modifier for a key and writes the final number into the generated section (5.2). `Load` reads a plain value, so every `pSettings` read of the item's section is covered automatically.
+
+- **Formula per key:** `final = clamp((base + Σ flat) × (1 + max(Σ pct, pct_floor)))`. Percentages add (+10% and +10% make +20%), so the result doesn't depend on the order modifiers were added. `base` is the value after role data and overrides (5.2), so an override changes this gun's base value and modifiers still stack on it.
+- **List values** (`hit_power = a, b, c, d`): each element is modified. Non-numeric keys are refused with a log line.
+- **Missing keys.** If the section doesn't define the key, use the default from the limits table (below). With no default, skip the modifier and log it once per key.
+
+**Where modifiers come from.** All three feed the same sum:
+
+| Source | Declared in | Saved in the record | Source name |
+|---|---|---|---|
+| Installed upgrade | `stat_mods = <section>` in the upgrade's property section (the one its `section =` names) | no, worked out from `m_upgrades` | `upgrade:<upgrade id>` |
+| Fitted part | `stat_mods = <section>` in the part's section | no, worked out from the parts list | `part:<part id>` |
+| Script | `add_modifier(...)` | yes | the caller's tag, such as `my_mod:overheat` |
+
+A `stat_mods` section has one line per key: `rpm = 0.1, pct` or `rpm = 25` (flat when no mode is given). The name `stat_mods` is used so it doesn't clash with Part_bench's `modifiers` (6.4).
+
+**Record.** A list of script modifiers: `stringZ source, stringZ key, u8 mode (0 flat, 1 pct), f32 value`. Same version bump as 3c if they ship together. Caps: 256 entries, 64 per source. Removing a source removes all its entries.
+
+**Limits table.** `[stat_mod_limits]` in a new `configs/misc/stat_mods.ltx`, one line per key: `rpm = <min>, <max> [, <default>]`. A global `pct_floor` (default `-0.9`), so stacked penalties can't reach zero or go negative. Keys without a line are not clamped.
+
+**Script API** (on `game_object` and the server object, like 2h):
+
+| Function | Notes |
+|---|---|
+| `add_modifier(source, key, value [, mode = "flat"])` | `mode` is `"flat"` or `"pct"`. Adding again with the same source and key replaces the entry |
+| `remove_modifier(source [, key])` | Removes one entry, or every entry for that source. Returns the count |
+| `get_modifiers([key])` | Every contribution, upgrades and parts included: `{source, key, mode, value}` |
+| `explain_stat(key)` | `{base, flat, pct, clamped, final, sources = {...}}` |
+
+Adding or removing a modifier is a config change: it rebuilds the section and, on a weapon, requests `ReloadConfig` (3c). Several changes in a frame are batched into one rebuild.
+
+**Existing upgrades are unchanged.** The old handlers still run after `Load` and still add their flat values to fields, so Anomaly/GAMMA upgrade sections behave as before. An upgrade can use `stat_mods`, the old keys, or both; both stack, with the old flat additions applied last.
+
+**Limits:**
+- Only the item's own section. Keys `Load` reads from other sections (HUD, sounds, ammo, attached addon sections) aren't covered. The generated HUD section (5.2) could get the same treatment later.
+- Values that are computed at runtime and not derived from config keys aren't affected. Fast-changing effects such as heat belong in a state value (6.2) read by script, not in a modifier.
+- In-place rebuild is weapon-only (`ReloadConfig`). On outfits and other items a change takes effect on the next spawn until `ReloadConfig` is extended to them.
+
+**Debug:** console `stat_explain <key>` on the item in hands prints the base, each contribution with its source and the final value. `mw_dump` (section 14) writes all of them.
+
+**Test:** two upgrades with `rpm = 0.1, pct` and `rpm = -0.05, pct` give base × 1.05, in either install order; a flat and a pct on the same key follow the formula; a list key changes every element; a clamp and the pct floor apply; a script modifier survives save/load and going offline; removing a source restores the value; an outfit key such as `fire_wound_protection` takes a modifier after save/load; `explain_stat` agrees with the value `Load` read.
+
+**Done when:** an upgrade, a part and a script modifier on `rpm` combine into the expected value on a live gun without respawning it, and removing any one of them gives the same stats as a gun built with only the other two.
+
+### 6.4 Part modifiers
+
+Stat changes from parts now go through `stat_mods` (6.3). This section covers Part_bench's existing `modifiers`, which name upgrade sections.
 
 Each part's `modifiers` sections are applied with the existing `install_upgrade_impl` chain (`xrGame/WeaponUpgrade.cpp:23`), with `loading = true`, but **not** added to `m_upgrades`. Part_bench's `upgrade =` sections work unchanged. While here, fix bug 1 (`hit_power_critical` writes zeros, `WeaponUpgrade.cpp:180`) and bug 4 (`scopes_sect` appended without a clear).
 
-### 6.3 Bench preview
+### 6.5 Bench preview
 
 The bench previews a configuration by applying a **preview record** to the gun through `ReloadConfig` while the bench holds it (the gun is not in hands), and reverting on cancel. The bench then reads stats from the real object, so they always match what Apply gives. This replaces Part_bench's Lua stat prediction.
 
@@ -636,7 +754,7 @@ Port `mw_aim.script` into the generated HUD section:
 - **Fit:** `CWeapon::FitPart(path, item)` validates through the resolver, moves the item's condition, upgrades and per-item data into the record, destroys the item entity, and runs `ReloadConfig`.
 - **Remove:** `CWeapon::RemovePart(path, spawn)` spawns an item of the part's section in the owner's inventory with its saved state, then rebuilds. Parts mounted on the removed part come off too, each returned as its own item.
 - **Drag and drop.** Generalise `CWeaponMagazined::CanAttach` / `Attach` / `Detach` (`xrGame/WeaponMagazined.cpp:1287`) to try a part fit: the first free compatible mount, else refuse with the resolver's reason. The context menu lists fitted parts for removal.
-- **The bench** (Part_bench UI, Lua) calls the same functions, plus the preview record from 6.3.
+- **The bench** (Part_bench UI, Lua) calls the same functions, plus the preview record from 6.5.
 - **Mechanic upgrades** no longer unload and detach everything (`pre_install_upgrade`, `xrGame/inventory_item_upgrade.cpp:260`). Parts stay fitted, and the rebuild applies the new upgrade.
 
 ### 10.2 W10: Icons
@@ -748,7 +866,7 @@ The gun's own sub-meshes use rule 2, then rule 3. A whole-gun paintjob therefore
 - Loose part items: the same lookup (rules 1 and 3) in the item's `net_Spawn`, so a painted part on the ground or in a stash shows its paint.
 - **Shared model (W1):** one call covers both views. The visual's `hud` flag is false, so `SetShaderTexture` builds world shaders, as 7.4 requires.
 - **Fallback guns** (two instances, see 7.3): also apply to `HudItemData()->m_model` on attach, until the gun is converted.
-- Changing a paintjob is a record change like any other: update the field, then rebuild. A bench preview uses the preview record (6.3).
+- Changing a paintjob is a record change like any other: update the field, then rebuild. A bench preview uses the preview record (6.5).
 
 ### 13.6 Limits
 
@@ -776,9 +894,9 @@ On the weapon's game object unless noted:
 | `move_part(path_or_id, pos)` | Move a part along its rail; a placement-only change (8.3) |
 | `get_part_prop(path_or_id, key)`, `set_part_prop(path_or_id, key, value)` | Placement and mod state saved in the record and visible to resolve callbacks (8.3) |
 | `register_part_resolve(func)` | Add an `on_part_resolve` callback (8.3) |
-| `set_preview(record)`, `clear_preview()` | Bench preview (6.3) |
+| `set_preview(record)`, `clear_preview()` | Bench preview (6.5) |
 | `get_part_data(path)`, `set_part_data(path, string)` | Per-part blob (battery, reticle mark) |
-| `get_override(key)`, `set_override(key, value)`, `iterate_overrides()` | Persistent per-gun keys, and persistent versions of `SetRPM` and the other setters |
+| `get_override(key)`, `set_override(key, value [, reload])`, `iterate_overrides()` | Persistent per-gun keys, and persistent versions of `SetRPM` and the other setters. `reload = false` stores a state value that never reaches the generated section or triggers a rebuild (6.2) |
 | `get_paintjob([path])`, `set_paintjob([path,] section_or_nil)` | Gun paintjob, or a fitted part's paintjob by path; `nil` clears it. Also available on loose part items (section 13) |
 | `part_attachment(path, hud)` | Read-only handle to a part's attachment (bone queries, lights) |
 | `combo_section()` | Compatibility name (12.2) |

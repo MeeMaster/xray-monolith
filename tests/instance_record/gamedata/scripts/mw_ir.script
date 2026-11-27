@@ -5,7 +5,7 @@
 --   run_string mw_ir.api()          on the gun in your hands: checks every script function on
 --                                   both the game object and the server object, then removes
 --                                   what it added. Needs nothing else.
---   run_string mw_ir.prepare()      marks the gun in your hands: rpm = 120, a mark override and a
+--   run_string mw_ir.prepare()      marks the gun in your hands: rpm = 120, a mark override, a state value and a
 --                                   small part tree (a scope with a cover, two parts on one rail)
 --   run_string mw_ir.verify()       finds the marked gun wherever it is (hands, backpack, an NPC,
 --                                   online or offline) and checks its whole record
@@ -21,6 +21,8 @@
 
 local MARK = "mw_ir_mark"
 local OVR = { rpm = "120", [MARK] = "1" }
+-- 3c: a state value; it must survive everything the config values do and never reach the generated section
+local STATE_KEY, STATE_VALUE = "mw_ir_charge", "0.75"
 
 -- The part tree prepare() builds; paths are what get_parts() must report
 local PARTS = {
@@ -173,7 +175,66 @@ function api()
 	check(count(w:get_parts()) == 0 or not w:get_parts()["mw_ir_mount"], "test parts are gone")
 
 	check(w:clear_override("mw_ir_str"), "clean up")
+
+	-- 3c: state values (reload = false) next to config values
+	local function in_section(key)
+		local s = w:instance_section()
+		return s ~= base and ini_sys:line_exist(s, key)
+	end
+	-- The clean-up above changed config; let its rebuild happen before counting
+	w:instance_section()
+	local c0 = w:record_counters()
+	check(w:set_override("mw_ir_api_charge", 0.5, false) == true, "set_override(key, value, false) stores a state value")
+	check(w:is_state_override("mw_ir_api_charge") and not se:is_state_override("mw_ir_missing"), "is_state_override")
+	check(w:get_override("mw_ir_api_charge") == "0.5", "get_override reads a state value")
+	check(not in_section("mw_ir_api_charge"), "a state value is not in the generated section")
+	check(w:get_overrides("state").mw_ir_api_charge == "0.5" and w:get_overrides("config").mw_ir_api_charge == nil,
+		"get_overrides filters by kind")
+	check(w:get_overrides().mw_ir_api_charge == "0.5", "get_overrides() without a filter lists both kinds")
+
+	local c1 = w:record_counters()
+	for i = 1, 1000 do
+		w:set_override("mw_ir_api_charge", i / 1000, false)
+	end
+	w:instance_section()
+	local c2 = w:record_counters()
+	check(c2.sends - c1.sends <= 1, "1000 state writes in a frame send at most one record: " .. (c2.sends - c1.sends))
+	check(c2.builds == c1.builds, "and build no section: " .. (c2.builds - c1.builds))
+	check(c1.builds == c0.builds, "setting the first state value built no section either")
+
+	-- Moving a key between kinds adds it to and removes it from the section
+	check(w:set_override("mw_ir_api_charge", "0.75") and not w:is_state_override("mw_ir_api_charge"), "set as config moves the key")
+	check(in_section("mw_ir_api_charge"), "moved to config: now in the generated section")
+	check(w:set_override("mw_ir_api_charge", "0.75", false) and w:is_state_override("mw_ir_api_charge"), "set as state moves it back")
+	check(not in_section("mw_ir_api_charge"), "moved to state: gone from the section")
+
+	-- Several config writes in a frame build the section once
+	local c3 = w:record_counters()
+	w:set_override("mw_ir_c1", "1")
+	w:set_override("mw_ir_c2", "2")
+	w:set_override("mw_ir_c3", "3")
+	local inst = w:instance_section()
+	w:instance_section()
+	local c4 = w:record_counters()
+	check(c4.builds - c3.builds == 1, "three config writes build the section once: " .. (c4.builds - c3.builds))
+	check(c4.sends - c3.sends == 3, "and send each change at once: " .. (c4.sends - c3.sends))
+	check(ini_sys:r_string_ex(inst, "mw_ir_c2") == "2", "the section has all three")
+
+	-- Clearing: a state value builds nothing, a config value rebuilds the section
+	local c5 = w:record_counters()
+	check(w:clear_override("mw_ir_api_charge") and w:get_override("mw_ir_api_charge") == nil, "clear a state value")
+	w:instance_section()
+	check(w:record_counters().builds == c5.builds, "clearing a state value builds no section")
+	for _, k in ipairs({ "mw_ir_c1", "mw_ir_c2", "mw_ir_c3" }) do w:clear_override(k) end
+	w:instance_section()
+	check(w:record_counters().builds == c5.builds + 1, "clearing config values rebuilds it once")
+
+	-- The server copy catches up with a state value after the flush (save, going offline, or 0.5 s)
+	check(se:set_override("mw_ir_se_state", "x", false) and w:is_state_override("mw_ir_se_state"),
+		"server-side set_override(key, value, false) on an online item")
+	check(se:clear_override("mw_ir_se_state"), "server-side clear of a state value")
 	finish("api")
+	say("api: a ReloadConfig of the gun follows in the log ([reload config]) once it is idle")
 end
 
 ---------------------------------------------------------------------------
@@ -193,6 +254,7 @@ function prepare()
 	for k, v in pairs(OVR) do
 		check(w:set_override(k, v), "set " .. k .. " = " .. v)
 	end
+	check(w:set_override(STATE_KEY, STATE_VALUE, false), "set state value " .. STATE_KEY .. " = " .. STATE_VALUE)
 	local ids = {}
 	for _, p in ipairs(PARTS) do
 		local parent = p.parent and ids[p.parent] or 0
@@ -203,10 +265,12 @@ function prepare()
 	say(string.format("marked %s [%d]. Its rpm override applies after a save/load. Run verify() any time.", w:section(), w:id()))
 end
 
-local function verify_record(get_override, get_parts, where)
+local function verify_record(get_override, get_parts, where, is_state)
 	for k, v in pairs(OVR) do
 		check(get_override(k) == v, where .. ": override " .. k .. " = " .. tostring(get_override(k)))
 	end
+	check(get_override(STATE_KEY) == STATE_VALUE and is_state(STATE_KEY) and not is_state(MARK),
+		where .. ": state value " .. STATE_KEY .. " = " .. tostring(get_override(STATE_KEY)) .. ", kept as state")
 	local parts = get_parts()
 	check(count(parts) == #PARTS, where .. ": " .. count(parts) .. " parts, expected " .. #PARTS)
 	local by_section = {}
@@ -243,7 +307,8 @@ function verify()
 		obj and "online" or "offline", owner and owner:name() or "nobody"))
 
 	check(not string.find(se:section_name(), "_i%d+$"), "server section is the base: " .. se:section_name())
-	verify_record(function(k) return se:get_override(k) end, function() return se:get_parts() end, "server")
+	verify_record(function(k) return se:get_override(k) end, function() return se:get_parts() end, "server",
+		function(k) return se:is_state_override(k) end)
 
 	local offline = se:get_override("mw_ir_offline")
 	if obj then
@@ -252,7 +317,9 @@ function verify()
 		check(inst == se:section_name() .. "_i" .. id, "instance_section() is the generated section: " .. inst)
 		check(ini_sys:r_float_ex(inst, "rpm") == 120, "generated section reads rpm = 120")
 		check(ini_sys:r_float_ex(se:section_name(), "rpm") ~= 120, "base section keeps its own rpm")
-		verify_record(function(k) return obj:get_override(k) end, function() return obj:get_parts() end, "game")
+		verify_record(function(k) return obj:get_override(k) end, function() return obj:get_parts() end, "game",
+			function(k) return obj:is_state_override(k) end)
+		check(not ini_sys:line_exist(inst, STATE_KEY), "the state value is not in the generated section")
 		if offline then
 			check(obj:get_override("mw_ir_offline") == offline, "offline edit reached the game side")
 		end

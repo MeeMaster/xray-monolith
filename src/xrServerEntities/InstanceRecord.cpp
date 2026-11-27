@@ -6,8 +6,8 @@
 #include "stdafx.h"
 #include "InstanceRecord.h"
 
-// Body layout, version 1 (all integers little endian, strings zero terminated):
-//   u16 override count, then (key, value) per override
+// Body layout, version 2 (all integers little endian, strings zero terminated):
+//   u16 override count, then (key, value, u8 flags) per override; version 1 has no flags byte
 //   u16 next part id
 //   u8  part count, then per part:
 //       u16 id, u16 parent, string mount, f32 pos,
@@ -39,12 +39,14 @@ namespace
 			const char* c = s.c_str() ? s.c_str() : "";
 			bytes(c, xr_strlen(c) + 1);
 		}
-		void props(const InstanceProps& v)
+		void props(const InstanceProps& v, bool with_flags = false)
 		{
 			for (const SInstanceProp& p : v)
 			{
 				str(p.key);
 				str(p.value);
+				if (with_flags)
+					u8_(p.flags);
 			}
 		}
 	};
@@ -97,7 +99,7 @@ namespace
 			p = z + 1;
 			return s;
 		}
-		void props(InstanceProps& v, u32 count)
+		void props(InstanceProps& v, u32 count, bool with_flags = false)
 		{
 			v.clear();
 			v.reserve(count);
@@ -106,6 +108,8 @@ namespace
 				SInstanceProp prop;
 				prop.key = str();
 				prop.value = str();
+				if (with_flags)
+					prop.flags = u8_();
 				if (ok) v.push_back(prop);
 			}
 		}
@@ -154,7 +158,7 @@ void CSE_InstanceRecord::write_body(xr_vector<u8>& out) const
 {
 	writer w(out);
 	w.u16_(u16(overrides.size()));
-	w.props(overrides);
+	w.props(overrides, true);
 	w.u16_(next_part_id);
 	w.u8_(u8(parts.size()));
 	for (const SInstancePart& part : parts)
@@ -275,17 +279,17 @@ void CSE_InstanceRecord::read(NET_Packet& P)
 		return;
 	}
 
-	if (!read_body(body.data(), size))
+	if (!read_body(body.data(), size, version))
 		clear();
 }
 
-bool CSE_InstanceRecord::read_body(const u8* data, u32 size)
+bool CSE_InstanceRecord::read_body(const u8* data, u32 size, u8 version)
 {
 	reader r(data, size);
 
 	const u16 override_count = r.u16_();
 	if (override_count > MAX_OVERRIDES) r.fail("too many overrides");
-	r.props(overrides, override_count);
+	r.props(overrides, override_count, version >= 2);
 	next_part_id = r.u16_();
 
 	const u8 part_count = r.u8_();
@@ -349,14 +353,16 @@ LPCSTR CSE_InstanceRecord::get_override(LPCSTR key) const
 	return nullptr;
 }
 
-bool CSE_InstanceRecord::set_override(LPCSTR key, LPCSTR value)
+bool CSE_InstanceRecord::set_override(LPCSTR key, LPCSTR value, bool state)
 {
 	if (is_opaque() || !str_ok(key) || !value || xr_strlen(value) > MAX_STRING)
 		return false;
+	const u8 flags = state ? u8(SInstanceProp::STATE) : u8(0);
 	for (SInstanceProp& p : overrides)
 		if (!xr_strcmp(p.key, key))
 		{
 			p.value = norm(value);
+			p.flags = flags; // setting with the other kind moves the key
 			return true;
 		}
 	if (overrides.size() >= MAX_OVERRIDES)
@@ -364,6 +370,7 @@ bool CSE_InstanceRecord::set_override(LPCSTR key, LPCSTR value)
 	SInstanceProp p;
 	p.key = key;
 	p.value = norm(value);
+	p.flags = flags;
 	overrides.push_back(p);
 	if (byte_size() > MAX_BYTES)
 	{
@@ -384,6 +391,42 @@ bool CSE_InstanceRecord::clear_override(LPCSTR key)
 			return true;
 		}
 	return false;
+}
+
+bool CSE_InstanceRecord::is_state_override(LPCSTR key) const
+{
+	for (const SInstanceProp& p : overrides)
+		if (!xr_strcmp(p.key, key))
+			return p.is_state_value();
+	return false;
+}
+
+bool CSE_InstanceRecord::has_config_overrides() const
+{
+	for (const SInstanceProp& p : overrides)
+		if (!p.is_state_value())
+			return true;
+	return false;
+}
+
+bool CSE_InstanceRecord::same_config(const CSE_InstanceRecord& o) const
+{
+	if (is_opaque() != o.is_opaque())
+		return false;
+	auto next = [](const InstanceProps& v, u32 i) {
+		while (i < v.size() && v[i].is_state_value())
+			++i;
+		return i;
+	};
+	u32 a = next(overrides, 0), b = next(o.overrides, 0);
+	while (a < overrides.size() && b < o.overrides.size())
+	{
+		if (overrides[a].key != o.overrides[b].key || overrides[a].value != o.overrides[b].value)
+			return false;
+		a = next(overrides, a + 1);
+		b = next(o.overrides, b + 1);
+	}
+	return a == overrides.size() && b == o.overrides.size();
 }
 
 SInstancePart* CSE_InstanceRecord::find_part(u16 id)
@@ -566,6 +609,61 @@ bool CSE_InstanceRecord::self_test()
 		}
 		check(n == MAX_OVERRIDES, "override cap is enforced");
 		check(c.clear_override("key_0") && !c.get_override("key_0"), "override can be cleared");
+	}
+
+	// 6. State and config overrides (3c)
+	{
+		CSE_InstanceRecord a;
+		a.set_override("rpm", "600");
+		a.set_override("charge", "0.5", true);
+		CSE_InstanceRecord b;
+		P.write_start();
+		a.write(P);
+		P.r_pos = 0;
+		b.read(P);
+		check(b == a && b.is_state_override("charge") && !b.is_state_override("rpm"), "state flag survives a round trip");
+
+		CSE_InstanceRecord c = a;
+		c.set_override("charge", "0.4", true);
+		check(c.same_config(a) && c != a, "changing a state value keeps the config");
+		c.clear_override("charge");
+		check(c.same_config(a), "clearing a state value keeps the config");
+		c.set_override("charge", "0.4");
+		check(!c.same_config(a) && !c.is_state_override("charge"), "setting a state key as config moves it");
+		c.set_override("charge", "0.4", true);
+		check(c.same_config(a) && c.is_state_override("charge"), "and back");
+		c.set_override("rpm", "601");
+		check(!c.same_config(a), "changing a config value changes the config");
+
+		CSE_InstanceRecord s;
+		s.set_override("charge", "1", true);
+		check(!s.has_config_overrides() && a.has_config_overrides(), "has_config_overrides ignores state keys");
+	}
+
+	// 7. A version 1 record (no flags byte) reads every override as config
+	{
+		NET_Packet B;
+		B.write_start();
+		B.w_u16(1);
+		B.w_stringZ("rpm");
+		B.w_stringZ("650");
+		B.w_u16(1);   // next part id
+		B.w_u8(0);    // parts
+		B.w_u8(0);    // no runtime block
+		P.write_start();
+		P.w_u8(1);
+		P.w_u16(u16(B.B.count));
+		P.w(B.B.data, B.B.count);
+		P.w_u32(sentinel);
+		P.r_pos = 0;
+		CSE_InstanceRecord b;
+		b.read(P);
+		check(!b.is_opaque() && b.get_override("rpm") && !xr_strcmp(b.get_override("rpm"), "650") &&
+			!b.is_state_override("rpm") && P.r_u32() == sentinel, "version 1 record reads with config overrides");
+		NET_Packet Q;
+		Q.write_start();
+		b.write(Q);
+		check(Q.B.count > 0 && Q.B.data[0] == VERSION, "and is written back in the current version");
 	}
 
 	Msg("%s [instance record test] %s", failed ? "!" : "-", failed ? "FAILED" : "all checks passed");

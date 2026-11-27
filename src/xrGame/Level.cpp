@@ -1007,6 +1007,9 @@ void CLevel::OnFrame()
 
 	// 2e: free dynamic config sections replaced or removed last frame; no config read is in progress here
 	pSettings->dynamic_sections_collect();
+	// 3c: weapons whose config overrides changed rebuild once they are idle or hidden
+	extern void weapon_reload_config_queue_update();
+	weapon_reload_config_queue_update();
 
 #ifdef DEBUG_MEMORY_MANAGER
     debug_memory_guard __guard__;

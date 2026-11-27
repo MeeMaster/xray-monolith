@@ -18,8 +18,9 @@ namespace instance_section
 
 	bool needed(const CSE_InstanceRecord& record)
 	{
-		// A record from a newer build can't be read, so the item stays on its base section
-		return !record.is_opaque() && !record.overrides.empty();
+		// A record from a newer build can't be read, so the item stays on its base section. State values (3c)
+		// never reach the section, so a record with only those needs none.
+		return !record.is_opaque() && record.has_config_overrides();
 	}
 
 	shared_str build(LPCSTR base, u16 id, const CSE_InstanceRecord& record)
@@ -35,7 +36,8 @@ namespace instance_section
 		CInifile::DynamicItems items;
 		items.reserve(record.overrides.size());
 		for (const SInstanceProp& p : record.overrides)
-			items.push_back({ p.key, p.value });
+			if (!p.is_state_value())
+				items.push_back({ p.key, p.value });
 
 		if (!pSettings->add_dynamic_section(sect.c_str(), base, items))
 		{

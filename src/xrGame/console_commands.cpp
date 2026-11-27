@@ -1,5 +1,7 @@
 #include "pch_script.h"
 #include "InstanceRecord.h"
+#include "Weapon.h"
+#include "WeaponMagazinedWGrenade.h"
 #include "../xrEngine/xr_ioconsole.h"
 #include "../xrEngine/xr_ioc_cmd.h"
 #include "../xrEngine/customhud.h"
@@ -2700,6 +2702,145 @@ public:
 	}
 };
 
+// Changes 3a/3b (WEAPON_ENGINE_PLAN.md 6): test commands for RerunLoad on the weapon in hands.
+static CWeapon* rebuild_test_weapon(LPCSTR cmd)
+{
+	PIItem item = active_item();
+	CWeapon* wpn = item ? smart_cast<CWeapon*>(item) : nullptr;
+	if (!wpn)
+		Msg("! [%s] take a weapon in your hands first", cmd);
+	return wpn;
+}
+
+// Rounds as runs in magazine order (the last run fires first): "ammo_a x20, ammo_b x5"
+static void rebuild_test_rounds(xr_string& out, const xr_vector<shared_str>& rounds)
+{
+	for (u32 i = 0; i < rounds.size();)
+	{
+		u32 j = i;
+		while (j < rounds.size() && rounds[j] == rounds[i])
+			++j;
+		string128 buf;
+		xr_sprintf(buf, "%s%s x%u", i ? ", " : "", rounds[i].c_str(), j - i);
+		out += buf;
+		i = j;
+	}
+}
+
+static void rebuild_test_state(xr_string& out, const CWeapon* wpn)
+{
+	SWeaponRuntimeSnapshot s;
+	wpn->runtime_snapshot(s);
+	string256 buf;
+	xr_sprintf(buf, "rounds %u [", u32(s.rounds.size()));
+	out = buf;
+	rebuild_test_rounds(out, s.rounds);
+	xr_sprintf(buf, "] ammo %s next %s grenades %u [", s.ammo_type.size() ? s.ammo_type.c_str() : "-",
+		s.next_ammo_type.size() ? s.next_ammo_type.c_str() : "-", u32(s.grenades.size()));
+	out += buf;
+	rebuild_test_rounds(out, s.grenades);
+	xr_sprintf(buf, "] grenade %s fire_mode %s%d gl %d scope %u cond %.3f addons 0x%02x", s.grenade_type.size() ? s.grenade_type.c_str() : "-",
+		s.has_fire_mode ? "" : "none/", s.fire_mode, int(s.gl_mode), u32(s.cur_scope), s.condition, u32(s.addon_flags));
+	out += buf;
+	xr_sprintf(buf, " [%s|%s|%s]", s.scope_name.size() ? s.scope_name.c_str() : "-",
+		s.silencer_name.size() ? s.silencer_name.c_str() : "-", s.launcher_name.size() ? s.launcher_name.c_str() : "-");
+	out += buf;
+}
+
+// reload_load_test [times]: runs Load again on the same config the given number of times (default 5) and checks
+// that nothing doubled, leaked or changed, and that the rounds, their types, the fire mode and launcher mode came
+// through. Works in launcher mode since 3b.
+class CCC_ReloadLoadTest : public IConsole_Command
+{
+public:
+	CCC_ReloadLoadTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		CWeapon* wpn = rebuild_test_weapon("reload_load_test");
+		if (!wpn)
+			return;
+		int times = 5;
+		if (args && *args)
+			sscanf(args, "%d", &times);
+		clamp(times, 1, 1000);
+
+		xr_string before, after, state_before, state_after;
+		wpn->LoadSignature(before);
+		rebuild_test_state(state_before, wpn);
+		const BOOL visible_before = wpn->getVisible();
+
+		CTimer timer;
+		timer.Start();
+		u32 fails = 0, unloads = 0;
+		for (int i = 0; i < times; ++i)
+		{
+			SWeaponRestoreReport r;
+			wpn->RerunLoad(&r);
+			wpn->LoadSignature(after);
+			if (after != before)
+			{
+				if (!fails)
+					Msg("! [reload_load_test] run %d changed the result:\n!   before %s\n!   after  %s", i + 1,
+						before.c_str(), after.c_str());
+				++fails;
+			}
+			if (r.rounds_unloaded || r.grenades_unloaded || r.addons_removed.size() || !r.gl_mode_kept)
+			{
+				if (!unloads)
+					Msg("! [reload_load_test] run %d unloaded [%s], removed addons [%s], launcher mode %s", i + 1,
+						r.unloaded.c_str(), r.addons_removed.c_str(), r.gl_mode_kept ? "kept" : "lost");
+				++unloads;
+			}
+		}
+		const float ms = timer.GetElapsed_sec() * 1000.f;
+		rebuild_test_state(state_after, wpn);
+
+		Msg("- [reload_load_test] %s [%u] from [%s]", wpn->cName().c_str(), wpn->ID(), wpn->config_section().c_str());
+		Msg("-   %s", before.c_str());
+		Msg("%s [reload_load_test] %d runs, %u changed the result, %u unloaded rounds", (fails || unloads) ? "!" : "-",
+			times, fails, unloads);
+		if (state_before == state_after)
+			Msg("- [reload_load_test] state kept: %s", state_after.c_str());
+		else
+			Msg("! [reload_load_test] state CHANGED:\n!   before %s\n!   after  %s", state_before.c_str(), state_after.c_str());
+		Msg("%s [reload_load_test] visibility %d -> %d; %.3f ms per run", wpn->getVisible() == visible_before ? "-" : "!",
+			int(visible_before), int(wpn->getVisible()), ms / float(times));
+	}
+};
+
+// rebuild_test: change 3b. Runs Load once from the weapon's current config section (set overrides first, e.g.
+// ammo_mag_size or ammo_class) and prints what was kept, what changed and what went to the inventory.
+class CCC_RebuildTest : public IConsole_Command
+{
+public:
+	CCC_RebuildTest(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; };
+	virtual void Execute(LPCSTR args)
+	{
+		CWeapon* wpn = rebuild_test_weapon("rebuild_test");
+		if (!wpn)
+			return;
+		xr_string sig_before, sig_after, state_before, state_after;
+		wpn->LoadSignature(sig_before);
+		rebuild_test_state(state_before, wpn);
+
+		SWeaponRestoreReport r;
+		wpn->RerunLoad(&r);
+
+		wpn->LoadSignature(sig_after);
+		rebuild_test_state(state_after, wpn);
+		Msg("- [rebuild_test] %s [%u] from [%s]", wpn->cName().c_str(), wpn->ID(), wpn->config_section().c_str());
+		Msg("-   config before %s", sig_before.c_str());
+		Msg("-   config after  %s", sig_after.c_str());
+		Msg("-   state before  %s", state_before.c_str());
+		Msg("-   state after   %s", state_after.c_str());
+		Msg("- [rebuild_test] unloaded %u rounds, %u grenades%s%s; ammo type %s, fire mode %s, launcher mode %s",
+			r.rounds_unloaded, r.grenades_unloaded, r.unloaded.size() ? ": " : "", r.unloaded.c_str(),
+			r.ammo_type_kept ? "kept" : "reset", r.fire_mode_kept ? "kept" : "reset", r.gl_mode_kept ? "kept" : "lost");
+		Msg("%s [rebuild_test] addons removed [%s], missing ammo sections dropped [%s]",
+			(r.addons_removed.size() || r.ammo_dropped.size()) ? "!" : "-", r.addons_removed.c_str(), r.ammo_dropped.c_str());
+	}
+};
+
 void CCC_RegisterCommands()
 {
 	//Not needed for a singleplayer-only mod
@@ -2762,6 +2903,8 @@ void CCC_RegisterCommands()
 	CMD1(CCC_IniDynamicTest, "ini_dynamic_test");
 	CMD1(CCC_InstanceRecordDump, "instance_record_dump");
 	CMD1(CCC_InstanceRecordSet, "instance_record_set");
+	CMD1(CCC_ReloadLoadTest, "reload_load_test");
+	CMD1(CCC_RebuildTest, "rebuild_test");
 	CMD4(CCC_Float, "wpn_world_shot_motion_dist", &ps_wpn_world_shot_motion_dist, 0.f, 500.f);
 	CMD4(CCC_Integer, "wpn_world_shot_motion_debug", &ps_wpn_world_shot_motion_debug, 0, 1);
 

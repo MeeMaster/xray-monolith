@@ -83,6 +83,8 @@ public:
 
 	void SetPosition(LPCSTR alias, const Fvector& pos);
 	void StopAllSounds();
+	// Stops and frees every sound, so the collection can be loaded again (WEAPON_ENGINE_PLAN.md 6, change 3a)
+	void Clear();
 };
 
 //Alundaio:
@@ -101,5 +103,8 @@ public:
 	               int type = sg_SourceType);
 	void SetPosition(LPCSTR alias, const Fvector& pos);
 	void UpdateAllSoundsPositions(const Fvector& P);
+	// Stops and frees every sound; Load appends, so a second Load must start from an empty collection (3a)
+	void Clear();
+	u32 size() const { return u32(m_sound_items.size()); }
 };
 //-Alundaio

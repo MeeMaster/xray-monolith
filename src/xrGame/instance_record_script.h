@@ -17,8 +17,13 @@ namespace instance_record_script
 	LPCSTR go_instance_section(CScriptGameObject* self);
 	LPCSTR go_get_override(CScriptGameObject* self, LPCSTR key);
 	bool go_set_override(CScriptGameObject* self, LPCSTR key, const ::luabind::object& value);
+	// 3c: set_override(key, value, reload); reload = false stores a state value
+	bool go_set_override_reload(CScriptGameObject* self, LPCSTR key, const ::luabind::object& value, bool reload);
 	bool go_clear_override(CScriptGameObject* self, LPCSTR key);
+	bool go_is_state_override(CScriptGameObject* self, LPCSTR key);
 	::luabind::object go_get_overrides(lua_State* L, CScriptGameObject* self);
+	::luabind::object go_get_overrides_filter(lua_State* L, CScriptGameObject* self, LPCSTR filter);
+	::luabind::object go_record_counters(lua_State* L, CScriptGameObject* self);
 	::luabind::object go_get_parts(lua_State* L, CScriptGameObject* self);
 	u16 go_add_part(CScriptGameObject* self, u16 parent, LPCSTR mount, LPCSTR section);
 	u16 go_add_part_pos(CScriptGameObject* self, u16 parent, LPCSTR mount, LPCSTR section, float pos);
@@ -29,8 +34,11 @@ namespace instance_record_script
 	// forwarded to it; otherwise they change the server copy, which the next spawn reads.
 	LPCSTR se_get_override(CSE_ALifeInventoryItem* self, LPCSTR key);
 	bool se_set_override(CSE_ALifeInventoryItem* self, LPCSTR key, const ::luabind::object& value);
+	bool se_set_override_reload(CSE_ALifeInventoryItem* self, LPCSTR key, const ::luabind::object& value, bool reload);
 	bool se_clear_override(CSE_ALifeInventoryItem* self, LPCSTR key);
+	bool se_is_state_override(CSE_ALifeInventoryItem* self, LPCSTR key);
 	::luabind::object se_get_overrides(lua_State* L, CSE_ALifeInventoryItem* self);
+	::luabind::object se_get_overrides_filter(lua_State* L, CSE_ALifeInventoryItem* self, LPCSTR filter);
 	::luabind::object se_get_parts(lua_State* L, CSE_ALifeInventoryItem* self);
 	u16 se_add_part(CSE_ALifeInventoryItem* self, u16 parent, LPCSTR mount, LPCSTR section);
 	u16 se_add_part_pos(CSE_ALifeInventoryItem* self, u16 parent, LPCSTR mount, LPCSTR section, float pos);
