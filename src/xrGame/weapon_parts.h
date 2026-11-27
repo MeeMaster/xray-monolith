@@ -7,6 +7,7 @@
 #pragma once
 
 struct SInstancePart;
+class CSE_InstanceRecord;
 
 namespace weapon_parts
 {
@@ -21,6 +22,25 @@ namespace weapon_parts
 	extern LPCSTR const PROP_HIDES;
 
 	bool is_placement_prop(LPCSTR key);
+
+	// Roles (5b, WEAPON_ENGINE_PLAN.md 9.1): tags saying which engine subsystem a part feeds (sight, muzzle,
+	// launcher, ...). A part can have several and several parts can share one. The part's `role` prop replaces
+	// its section's `role` key. Lower case, no blanks or repeats.
+	extern LPCSTR const PROP_ROLE;
+	void part_roles(const SInstancePart& part, xr_vector<shared_str>& out);
+	bool has_role(const SInstancePart& part, LPCSTR role);
+
+	// Sight (5b-2, WEAPON_ENGINE_PLAN.md 9.1). The active sight: the state value active_sight when it names a
+	// fitted sight, else the sight with the fewest mounts between it and the item, then record order. 0: none.
+	u16 active_sight(const CSE_InstanceRecord& record);
+	// Where a sight's scope data is: its section's `sight_section`, else its section. Empty when neither exists.
+	shared_str sight_data_section(const SInstancePart& part);
+	// The data section of the active sight; empty when there is none. A change here changes the item's config.
+	shared_str active_sight_data(const CSE_InstanceRecord& record);
+	// The generated-section layer for a sight: its scope keys (scope_*, s3ds_*, min_scope_zoom_factor,
+	// zoom_step_count, holder_range_modifier, holder_fov_modifier, zoom_enabled, and the names in its
+	// `sight_keys`), then scope_status = 1, so the gun reads them as a built-in scope.
+	void sight_items(LPCSTR data_section, CInifile::DynamicItems& out);
 
 	// Checks a placement prop value and writes its normal form (numbers as %g, names trimmed, no repeats).
 	// Other keys pass through unchanged. false with a reason when the value is invalid.

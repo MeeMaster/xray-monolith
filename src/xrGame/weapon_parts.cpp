@@ -15,6 +15,7 @@ namespace weapon_parts
 	LPCSTR const PROP_OFFSET = "offset";
 	LPCSTR const PROP_HIDES = "hides";
 	LPCSTR const PROP_VISUAL = "visual";
+	LPCSTR const PROP_ROLE = "role";
 }
 
 namespace
@@ -83,6 +84,31 @@ namespace weapon_parts
 	bool normalise_prop(LPCSTR key, LPCSTR value, xr_string& out, xr_string& error)
 	{
 		out = value ? value : "";
+		if (key && !xr_strcmp(key, PROP_ROLE) && !out.empty())
+		{
+			xr_vector<shared_str> names;
+			split_names(value, names);
+			out.clear();
+			xr_vector<xr_string> seen;
+			for (const shared_str& n : names)
+			{
+				string256 low;
+				xr_strcpy(low, n.c_str());
+				xr_strlwr(low);
+				if (std::find(seen.begin(), seen.end(), xr_string(low)) != seen.end())
+					continue;
+				seen.push_back(low);
+				if (!out.empty())
+					out += ", ";
+				out += low;
+			}
+			if (out.empty())
+			{
+				error = "role must list role names";
+				return false;
+			}
+			return true;
+		}
 		if (!is_placement_prop(key) || out.empty())
 			return true;
 
@@ -128,6 +154,116 @@ namespace weapon_parts
 			return false;
 		}
 		return true;
+	}
+
+	void part_roles(const SInstancePart& part, xr_vector<shared_str>& out)
+	{
+		out.clear();
+		LPCSTR value = nullptr;
+		for (const SInstanceProp& p : part.props)
+			if (!xr_strcmp(p.key, PROP_ROLE))
+				value = p.value.c_str();
+		if (!value && part.section.size() && pSettings->section_exist(part.section) && pSettings->line_exist(part.section, "role"))
+			value = pSettings->r_string(part.section, "role");
+		if (!value || !*value)
+			return;
+		xr_vector<shared_str> names;
+		split_names(value, names);
+		for (const shared_str& n : names)
+		{
+			string256 low;
+			xr_strcpy(low, n.c_str());
+			xr_strlwr(low);
+			const shared_str s = low;
+			if (std::find(out.begin(), out.end(), s) == out.end())
+				out.push_back(s);
+		}
+	}
+
+	bool has_role(const SInstancePart& part, LPCSTR role)
+	{
+		xr_vector<shared_str> roles;
+		part_roles(part, roles);
+		for (const shared_str& r : roles)
+			if (!xr_strcmp(r, role))
+				return true;
+		return false;
+	}
+
+	u16 active_sight(const CSE_InstanceRecord& record)
+	{
+		if (record.is_opaque())
+			return 0;
+		auto depth = [&](const SInstancePart& part) {
+			u32 d = 0;
+			for (const SInstancePart* p = &part; p && p->parent; p = record.find_part(p->parent))
+				++d;
+			return d;
+		};
+		LPCSTR chosen = record.get_override("active_sight");
+		const u16 chosen_id = chosen ? u16(atoi(chosen)) : 0;
+		u16 best = 0;
+		u32 best_depth = 0;
+		for (const SInstancePart& p : record.parts)
+		{
+			if (!has_role(p, "sight"))
+				continue;
+			if (chosen_id && p.id == chosen_id)
+				return p.id;
+			const u32 d = depth(p);
+			if (!best || d < best_depth)
+			{
+				best = p.id;
+				best_depth = d;
+			}
+		}
+		return best;
+	}
+
+	shared_str sight_data_section(const SInstancePart& part)
+	{
+		if (!part.section.size() || !pSettings->section_exist(part.section))
+			return shared_str();
+		if (pSettings->line_exist(part.section, "sight_section"))
+		{
+			LPCSTR s = pSettings->r_string(part.section, "sight_section");
+			if (s && *s && pSettings->section_exist(s))
+				return shared_str(s);
+			Msg("! [weapon parts] [%s] sight_section [%s] does not exist; its own keys are used", part.section.c_str(), s ? s : "");
+		}
+		return part.section;
+	}
+
+	shared_str active_sight_data(const CSE_InstanceRecord& record)
+	{
+		const SInstancePart* p = record.find_part(active_sight(record));
+		return p ? sight_data_section(*p) : shared_str();
+	}
+
+	static bool is_sight_key(LPCSTR k)
+	{
+		if (!xr_strcmp(k, "scope_status") || !xr_strcmp(k, "scope_name") || !xr_strcmp(k, "scope_x") || !xr_strcmp(k, "scope_y"))
+			return false; // the gun's own: addon status, and the attachable scope's name and icon place
+		return !strncmp(k, "scope_", 6) || !strncmp(k, "s3ds_", 5) || !xr_strcmp(k, "min_scope_zoom_factor") ||
+			!xr_strcmp(k, "zoom_step_count") || !xr_strcmp(k, "holder_range_modifier") ||
+			!xr_strcmp(k, "holder_fov_modifier") || !xr_strcmp(k, "zoom_enabled");
+	}
+
+	void sight_items(LPCSTR data_section, CInifile::DynamicItems& out)
+	{
+		if (!data_section || !*data_section || !pSettings->section_exist(data_section))
+			return;
+		xr_vector<shared_str> extra;
+		if (pSettings->line_exist(data_section, "sight_keys"))
+			split_names(pSettings->r_string(data_section, "sight_keys"), extra);
+		for (const CInifile::Item& it : pSettings->r_section(data_section).Data)
+		{
+			if (!it.first.size() || !it.second.size())
+				continue;
+			if (is_sight_key(it.first.c_str()) || std::find(extra.begin(), extra.end(), it.first) != extra.end())
+				out.push_back({ it.first, it.second });
+		}
+		out.push_back({ shared_str("scope_status"), shared_str("1") });
 	}
 
 	bool read_placement(const SInstancePart& part, SPlacement& out)

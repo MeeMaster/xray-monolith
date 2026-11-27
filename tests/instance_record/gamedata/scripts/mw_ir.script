@@ -39,6 +39,7 @@
 --   run_string mw_ir.fits()           5a fit and remove with test items (a light holding batteries); runs in steps.
 --   run_string mw_ir.offline()        5a fit and remove on offline server entities (made on another level).
 --   run_string mw_ir.upgrade_keep()   5a a mechanic upgrade keeps the rounds and parts (a fresh AK in your inventory).
+--   run_string mw_ir.roles()          5b-1 part roles, the active sight, and vanilla scope exclusivity.
 --   run_string mw_ir.moves()          after parts(): 4d placement-only moves and place_parts hooks (moves_clear()).
 --   run_string mw_ir.hooks()          after parts(): script hooks on the test parts (bone visibility by view,
 --                                     part transforms, a light on part A). hooks_clear() detaches the light.
@@ -1583,5 +1584,268 @@ function upgrade_keep()
 		alife_release_id(id)
 		finish("upgrade_keep")
 		return true
+	end)
+end
+
+---------------------------------------------------------------------------
+-- roles(): 5b-1 part roles (WEAPON_ENGINE_PLAN.md 9.1) on the gun in your hands, with the role test parts in
+-- configs/mod_system_mw_parts_test.ltx. Checks role lists, the active sight rule and its script override, the
+-- role prop, and that a vanilla scope can't be attached while sight parts are fitted. Leaves the gun as it was.
+---------------------------------------------------------------------------
+
+local ROLE_MOUNTS = { "mw_role_a", "mw_role_m", "mw_role_b", "mw_role_mz" }
+
+local function clear_role_parts(w)
+	for _, p in pairs(w:get_parts()) do
+		for _, m in ipairs(ROLE_MOUNTS) do
+			if p.mount == m and p.parent == 0 then w:record_remove_part(p.id) end
+		end
+	end
+	w:set_override("active_sight", nil)
+end
+
+local function same_ids(t, ids)
+	if #t ~= #ids then return false end
+	for i = 1, #ids do
+		if t[i] ~= ids[i] then return false end
+	end
+	return true
+end
+
+-- The vanilla addons the engine attaches on this gun (status 2 = attachable, none attached now), and the role part
+-- that takes each over. Anomaly attaches scopes in script (item_weapon.script clones to a combo section), so on most
+-- guns only the silencer and the launcher go through the engine's CanAttach.
+local function vanilla_addons(w)
+	local sect = w:section()
+	local out = {}
+	if w:weapon_silencer_status() == 2 and not w:weapon_is_silencer() then
+		local name = ini_sys:r_string_ex(sect, "silencer_name")
+		if name and ini_sys:section_exist(name) then
+			out[#out + 1] = { kind = "silencer", item = name, part = "mw_pt_muzzle", attached = function(g) return g:weapon_is_silencer() end }
+		end
+	end
+	if w:weapon_grenadelauncher_status() == 2 and not w:weapon_is_grenadelauncher() then
+		local name = ini_sys:r_string_ex(sect, "grenade_launcher_name")
+		if name and ini_sys:section_exist(name) then
+			out[#out + 1] = { kind = "launcher", item = name, part = "mw_pt_launcher", attached = function(g) return g:weapon_is_grenadelauncher() end }
+		end
+	end
+	if w:weapon_scope_status() == 2 and not w:weapon_is_scope() then
+		local list = ini_sys:r_string_ex(sect, "scopes")
+		local first = list and string.match(list, "([^,%s]+)")
+		local name = first and first ~= "none" and (ini_sys:r_string_ex(first, "scope_name") or first)
+		if name and ini_sys:section_exist(name) then
+			out[#out + 1] = { kind = "scope", item = name, part = "mw_pt_sight", attached = function(g) return g:weapon_is_scope() end }
+		end
+	end
+	return out
+end
+
+local function addon_status(w)
+	return string.format("%s: scope status %s (attached %s), silencer status %s (attached %s), launcher status %s (attached %s)",
+		w:section(), tostring(w:weapon_scope_status()), tostring(w:weapon_is_scope()),
+		tostring(w:weapon_silencer_status()), tostring(w:weapon_is_silencer()),
+		tostring(w:weapon_grenadelauncher_status()), tostring(w:weapon_is_grenadelauncher()))
+end
+
+-- The exclusivity check: on gun_id (the gun in your hands, or a test AK spawned for it, released afterwards)
+local function roles_scope(gun_id, spawned)
+	local tries = 0
+	local item_id, addon
+	local function done()
+		if spawned then alife_release_id(gun_id) end
+		finish("roles")
+		return true
+	end
+	CreateTimeEvent("mw_ir", "roles_scope", 0.3, function()
+		tries = tries + 1
+		local w = level.object_by_id(gun_id)
+		if w and not item_id then
+			addon = vanilla_addons(w)[1]
+			if not addon then
+				say("no vanilla addon this gun's engine attaches is free: the exclusivity check is skipped. " .. addon_status(w))
+				return done()
+			end
+			item_id = alife_create_item(addon.item, db.actor).id
+		end
+		local item = item_id and level.object_by_id(item_id)
+		if not (w and item) then
+			if tries > 20 then check(false, "the test gun and the vanilla addon came online") return done() end
+			ResetTimeEvent("mw_ir", "roles_scope", 0.3)
+			return false
+		end
+		-- With a part of that role fitted, the vanilla addon is refused
+		local p = w:fit_part(addon.part, 0, "mw_role_a")
+		w:weapon_addon_attach(item)
+		check(not addon.attached(w) and level.object_by_id(item_id) ~= nil,
+			"with a " .. addon.kind .. " part fitted, the vanilla " .. addon.kind .. " [" .. addon.item .. "] is refused and stays in the inventory")
+		-- Without it, the vanilla addon attaches as always (grandfathering)
+		w:record_remove_part(p)
+		w:weapon_addon_attach(item)
+		check(addon.attached(w), "without the part, the vanilla " .. addon.kind .. " attaches as before")
+		w:weapon_addon_detach(addon.item, true)
+		check(not addon.attached(w), "and detaches as before")
+		-- The detached item is spawned a moment later; release it once it has a server object
+		CreateTimeEvent("mw_ir", "roles_addon_cleanup", 0.5, function()
+			local back = db.actor:object(addon.item)
+			if back and alife():object(back:id()) then alife_release_id(back:id()) end
+			return true
+		end)
+		return done()
+	end)
+end
+
+function roles()
+	local w = gun()
+	if not w then return end
+	begin()
+	if not check(ini_sys:section_exist("mw_pt_sight"), "the role test parts exist (configs/mod_system_mw_parts_test.ltx)") then
+		return finish("roles")
+	end
+	clear_role_parts(w)
+	local before = w:get_roles()
+	check(#before.sight == 0 and #before.muzzle == 0 and before.active_sight == 0, "no role parts at the start")
+
+	-- A sight on the gun, and a sight-with-laser one mount deeper
+	local a = w:fit_part("mw_pt_sight", 0, "mw_role_a")
+	local m = w:fit_part("mw_pt_light", 0, "mw_role_m")
+	local b = w:fit_part("mw_pt_sight_laser", m, "mw_role_b")
+	local mz = w:fit_part("mw_pt_muzzle", 0, "mw_role_mz")
+	local r = w:get_roles()
+	check(same_ids(r.sight, { a, b }) and same_ids(r.muzzle, { mz }) and #r.launcher == 0,
+		"role lists: sight {" .. table.concat(r.sight, ", ") .. "}, muzzle {" .. table.concat(r.muzzle, ", ") .. "}")
+	local lr = w:get_part_roles(b)
+	check(#lr == 2 and lr[1] == "sight" and lr[2] == "laser", "a section's untidy role list reads as 'sight, laser': " .. table.concat(lr, ", "))
+	check(w:has_part_role("laser") and not w:has_part_role("launcher"), "has_part_role")
+
+	-- The active sight: the shallowest by default, the script's choice when it names a fitted sight
+	check(r.active_sight == a, "the shallowest sight is active by default: " .. tostring(r.active_sight))
+	w:set_override("active_sight", tostring(b), false)
+	check(w:get_roles().active_sight == b, "active_sight set by script picks the deeper sight")
+	w:set_override("active_sight", "9999", false)
+	check(w:get_roles().active_sight == a, "an active_sight that isn't a fitted sight falls back to the default")
+	w:set_override("active_sight", nil)
+
+	-- The role prop replaces the section's roles
+	check(w:set_part_prop(a, "role", " Muzzle , muzzle ") and w:get_part_prop(a, "role") == "muzzle", "the role prop is normalised: '" .. tostring(w:get_part_prop(a, "role")) .. "'")
+	r = w:get_roles()
+	check(same_ids(r.sight, { b }) and same_ids(r.muzzle, { a, mz }) and r.active_sight == b, "the role prop moves part A from sight to muzzle")
+
+	clear_role_parts(w)
+	r = w:get_roles()
+	check(#r.sight == 0 and #r.muzzle == 0, "the role test parts are gone again")
+
+	if vanilla_addons(w)[1] then
+		roles_scope(w:id(), false)
+	else
+		say("the gun in your hands has no free vanilla addon the engine attaches; a test wpn_ak74 is spawned for the exclusivity check")
+		roles_scope(alife_create_item("wpn_ak74", db.actor).id, true)
+	end
+end
+
+---------------------------------------------------------------------------
+-- sights(): 5b-2 sight parts (WEAPON_ENGINE_PLAN.md 9.1) on the gun in your hands, with mw_pt_sight_4x and
+-- mw_pt_sight_ref (sight_section = wpn_addon_scope) from configs/mod_system_mw_parts_test.ltx. The active
+-- sight's scope keys go into the gun's generated section with scope_status = 1, the gun reloads its config
+-- and reads them as a built-in scope; a script's active_sight switches sights; without sights the gun is as
+-- before. Leaves the gun as it was.
+---------------------------------------------------------------------------
+
+local SIGHT_MOUNTS = { "mw_sight_a", "mw_sight_b" }
+
+local function clear_sight_parts(w)
+	for _, p in pairs(w:get_parts()) do
+		for _, m in ipairs(SIGHT_MOUNTS) do
+			if p.mount == m and p.parent == 0 then w:record_remove_part(p.id) end
+		end
+	end
+	w:set_override("active_sight", nil)
+end
+
+local function scope_factor(w)
+	local c = w:cast_Weapon()
+	return c and c:GetScopeZoomFactor()
+end
+
+-- Runs then_do(w) once cond(w) holds (the config reload waits until the gun is idle and not aimed)
+local function wait_for(name, gun_id, cond, what, then_do)
+	local tries = 0
+	CreateTimeEvent("mw_ir", name, 0.2, function()
+		tries = tries + 1
+		local w = level.object_by_id(gun_id)
+		if w and cond(w) then
+			then_do(w)
+			return true
+		end
+		if not w or tries > 50 then
+			check(false, what .. " (timed out: keep the gun idle and don't aim)")
+			if w then clear_sight_parts(w) end
+			finish("sights")
+			return true
+		end
+		ResetTimeEvent("mw_ir", name, 0.2)
+		return false
+	end)
+end
+
+function sights()
+	local w = gun()
+	if not w then return end
+	begin()
+	if not check(ini_sys:section_exist("mw_pt_sight_4x") and ini_sys:section_exist("wpn_addon_scope"),
+		"the sight test parts and wpn_addon_scope exist") then
+		return finish("sights")
+	end
+	if w:weapon_scope_status() == 2 and w:weapon_is_scope() then
+		say("take the vanilla scope off this gun first: with a sight part fitted the parts win and the scope would come off")
+		return finish("sights")
+	end
+	clear_sight_parts(w)
+	local id = w:id()
+	local base_status = w:weapon_scope_status()
+	local base_factor = scope_factor(w)
+	local ref_factor = ini_sys:r_float_ex("wpn_addon_scope", "scope_zoom_factor")
+	say(string.format("%s: scope status %s, scope zoom factor %s", w:section(), tostring(base_status), tostring(base_factor)))
+
+	-- A 4x sight: its keys are in the generated section, the base section is untouched
+	local a = w:fit_part("mw_pt_sight_4x", 0, "mw_sight_a")
+	local inst = w:instance_section()
+	check(inst ~= w:section() and ini_sys:r_float_ex(inst, "scope_status") == 1 and ini_sys:r_float_ex(inst, "scope_zoom_factor") == 4
+		and ini_sys:r_string_ex(inst, "scope_texture") == "none",
+		"[" .. tostring(inst) .. "] has the sight's keys and scope_status = 1")
+	check(ini_sys:r_float_ex(w:section(), "scope_status") == base_status, "the base section keeps its scope_status")
+	check(ini_sys:r_string_ex(inst, "role") == nil, "only scope keys are copied, not the part's role")
+
+	wait_for("sights_a", id, function(g) return g:weapon_scope_status() == 1 and scope_factor(g) ~= base_factor end,
+		"the gun reloads with the sight as a built-in scope", function(g)
+		local f4 = scope_factor(g)
+		check(g:weapon_is_scope(), "weapon_is_scope() with the sight part: " .. tostring(g:weapon_is_scope()))
+		check(true, "scope zoom factor with the 4x sight: " .. tostring(f4))
+
+		-- A second sight next to it: the first stays active until a script picks the second
+		local b = g:fit_part("mw_pt_sight_ref", 0, "mw_sight_b")
+		check(g:get_roles().active_sight == a and ini_sys:r_float_ex(g:instance_section(), "scope_zoom_factor") == 4,
+			"a second sight in record order leaves the first active")
+		g:set_override("active_sight", tostring(b), false)
+		inst = g:instance_section()
+		check(g:get_roles().active_sight == b and ini_sys:r_float_ex(inst, "scope_zoom_factor") == ref_factor
+			and ini_sys:r_string_ex(inst, "scope_texture") == ini_sys:r_string_ex("wpn_addon_scope", "scope_texture"),
+			"active_sight switches the section to wpn_addon_scope's data (sight_section): factor " .. tostring(ref_factor))
+
+		wait_for("sights_b", id, function(g2) return math.abs(scope_factor(g2) - f4) > 0.0001 end,
+			"the gun reloads with the switched sight", function(g2)
+			local fr = scope_factor(g2)
+			check(math.abs(fr / f4 - ref_factor / 4) < 0.01,
+				string.format("the zoom factors follow the sights: %s / %s = %s / 4", tostring(fr), tostring(f4), tostring(ref_factor)))
+
+			-- Without sights the gun is as before
+			clear_sight_parts(g2)
+			check(ini_sys:r_float_ex(g2:instance_section(), "scope_status") == base_status, "without sights the section's scope_status is the base one again")
+			wait_for("sights_c", id, function(g3) return g3:weapon_scope_status() == base_status and scope_factor(g3) == base_factor end,
+				"the gun reloads to its own scope status " .. tostring(base_status) .. " and factor " .. tostring(base_factor), function(g3)
+				check(true, "the gun is back to its own scope status and zoom factor")
+				finish("sights")
+			end)
+		end)
 	end)
 end

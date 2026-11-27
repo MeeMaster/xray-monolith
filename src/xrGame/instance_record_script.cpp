@@ -705,6 +705,52 @@ namespace instance_record_script
 		return t;
 	}
 
+	// ---- 5b roles -----------------------------------------------------------
+
+	::luabind::object go_get_roles(lua_State* L, CScriptGameObject* self)
+	{
+		::luabind::object t = ::luabind::newtable(L);
+		CWeapon* w = self ? smart_cast<CWeapon*>(&self->object()) : nullptr;
+		if (!w)
+			return t;
+		for (int s = 0; s < CWeapon::PART_SUBSYSTEMS; ++s)
+		{
+			::luabind::object ids = ::luabind::newtable(L);
+			int i = 1;
+			for (u16 id : w->role_parts(CWeapon::EPartSubsystem(s)))
+				ids[i++] = id;
+			t[CWeapon::part_subsystem_role(CWeapon::EPartSubsystem(s))] = ids;
+		}
+		t["active_sight"] = w->active_sight();
+		return t;
+	}
+
+	bool go_has_part_role(CScriptGameObject* self, LPCSTR role)
+	{
+		CInventoryItem* item = game_item(self);
+		if (!item || !role)
+			return false;
+		for (const SInstancePart& p : item->instance_record().parts)
+			if (weapon_parts::has_role(p, role))
+				return true;
+		return false;
+	}
+
+	::luabind::object go_get_part_roles(lua_State* L, CScriptGameObject* self, u16 id)
+	{
+		::luabind::object t = ::luabind::newtable(L);
+		CInventoryItem* item = game_item(self);
+		const SInstancePart* p = item ? item->instance_record().find_part(id) : nullptr;
+		if (!p)
+			return t;
+		xr_vector<shared_str> roles;
+		weapon_parts::part_roles(*p, roles);
+		int i = 1;
+		for (const shared_str& r : roles)
+			t[i++] = r.c_str();
+		return t;
+	}
+
 	// ---- 5a fit and remove --------------------------------------------------
 	// On a game object, or on a server entity; an entity whose object is online goes through the object (4.3).
 

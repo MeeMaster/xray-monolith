@@ -12,6 +12,7 @@
 //#include "stdafx.h"
 #include "pch_script.h"
 #include "instance_section.h"
+#include "weapon_parts.h"
 #include "ai_space.h"
 #include "alife_simulator.h"
 #include "alife_object_registry.h"
@@ -365,7 +366,9 @@ bool CInventoryItem::set_instance_record(const CSE_InstanceRecord& record, bool 
 		Msg("! [instance record] %s [%u] has a record from a newer build; it is read-only", object().cName().c_str(), object_id());
 		return false;
 	}
-	const bool config_changed = !m_instance.same_config(record);
+	// 5b-2: the active sight's scope keys are a layer of the section, so another sight is another config
+	const bool config_changed = !m_instance.same_config(record) ||
+		weapon_parts::active_sight_data(m_instance) != weapon_parts::active_sight_data(record);
 	const bool parts_changed = !(m_instance.parts == record.parts);
 	m_instance = record;
 	if (parts_changed)

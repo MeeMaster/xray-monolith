@@ -50,6 +50,10 @@ namespace instance_record_script
 	bool go_attach_part_light_bone(CScriptGameObject* self, u16 id, const ::luabind::object& light, LPCSTR bone);
 	bool go_detach_part_light(CScriptGameObject* self, u16 id);
 	::luabind::object go_get_part_tree_stats(lua_State* L, CScriptGameObject* self);
+	// 5b roles: {sight = {ids}, muzzle = {ids}, launcher = {ids}, active_sight = id}; any item's part roles
+	::luabind::object go_get_roles(lua_State* L, CScriptGameObject* self);
+	bool go_has_part_role(CScriptGameObject* self, LPCSTR role);
+	::luabind::object go_get_part_roles(lua_State* L, CScriptGameObject* self, u16 id);
 
 	// 5a fit and remove (WEAPON_ENGINE_PLAN.md 10.1), on any item with a record: a gun or a loose part item.
 	// fit_part(item | section, parent_id, mount [, props]): the item's state and contents move into a new part,

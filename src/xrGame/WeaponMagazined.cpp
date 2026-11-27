@@ -1293,6 +1293,8 @@ bool CWeaponMagazined::PlayAnimCrouchIdleMoving()
 
 bool CWeaponMagazined::CanAttach(PIItem pIItem)
 {
+	if (vanilla_addon_blocked(pIItem))
+		return false; // 5b: parts have taken that subsystem over
 	CScope* pScope = smart_cast<CScope*>(pIItem);
 	CSilencer* pSilencer = smart_cast<CSilencer*>(pIItem);
 	CGrenadeLauncher* pGrenadeLauncher = smart_cast<CGrenadeLauncher*>(pIItem);

@@ -594,6 +594,8 @@ void CWeaponMagazinedWGrenade::OnH_B_Independent(bool just_before_destroy)
 
 bool CWeaponMagazinedWGrenade::CanAttach(PIItem pIItem)
 {
+	if (vanilla_addon_blocked(pIItem))
+		return false; // 5b: parts have taken that subsystem over
 	CGrenadeLauncher* pGrenadeLauncher = smart_cast<CGrenadeLauncher*>(pIItem);
 
 	if (pGrenadeLauncher &&

@@ -6,3 +6,26 @@
 
 [mw_pt_battery]:bandage
 part_visual = none
+
+; 5b roles (mw_ir.roles()): a sight, a sight with a laser (its role list is untidy on purpose), a muzzle part
+[mw_pt_sight]:bandage
+role = sight
+
+[mw_pt_sight_laser]:bandage
+role = Sight, laser, sight
+
+[mw_pt_muzzle]:bandage
+role = muzzle
+
+[mw_pt_launcher]:bandage
+role = launcher
+
+; 5b-2 sights (mw_ir.sights()): a 4x sight with its own scope keys, and one that takes its data from a vanilla scope
+[mw_pt_sight_4x]:bandage
+role = sight
+scope_zoom_factor = 4
+scope_texture = none
+
+[mw_pt_sight_ref]:bandage
+role = sight
+sight_section = wpn_addon_scope

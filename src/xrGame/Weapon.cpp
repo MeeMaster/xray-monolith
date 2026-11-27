@@ -40,6 +40,10 @@
 #include "script_game_object.h"
 #include "weapon_part_tree.h"
 #include "instance_record_script.h"
+#include "weapon_parts.h"
+#include "Scope.h"
+#include "Silencer.h"
+#include "GrenadeLauncher.h"
 #include "ai/stalker/ai_stalker.h"
 
 #define WEAPON_REMOVE_TIME		60000
@@ -1165,7 +1169,9 @@ BOOL CWeapon::net_Spawn(CSE_Abstract* DC)
 
 	// 4b: the part tree follows the record the item spawned with
 	m_part_tree_dirty = true;
+	m_role_parts_dirty = true;
 	parts_update();
+	refresh_role_parts(); // logs a vanilla addon and a part on the same subsystem once per spawn
 
 	return bResult;
 }
@@ -1225,6 +1231,60 @@ void CWeapon::parts_rebuild()
 		if (Visual())
 			UpdateAddonsVisibility();
 	}
+}
+
+LPCSTR CWeapon::part_subsystem_role(EPartSubsystem s)
+{
+	static LPCSTR const names[PART_SUBSYSTEMS] = { "sight", "muzzle", "launcher" };
+	return s < PART_SUBSYSTEMS ? names[s] : "";
+}
+
+void CWeapon::refresh_role_parts()
+{
+	m_role_parts_dirty = false;
+	for (auto& v : m_role_parts)
+		v.clear();
+	if (m_instance.is_opaque())
+		return;
+	for (const SInstancePart& p : m_instance.parts)
+		for (int s = 0; s < PART_SUBSYSTEMS; ++s)
+			if (weapon_parts::has_role(p, part_subsystem_role(EPartSubsystem(s))))
+				m_role_parts[s].push_back(p.id);
+
+	// Grandfathering: a vanilla addon and parts on one subsystem should not happen; the parts win
+	const bool vanilla[PART_SUBSYSTEMS] = {
+		m_eScopeStatus == ALife::eAddonAttachable && (m_flagsAddOnState & CSE_ALifeItemWeapon::eWeaponAddonScope),
+		m_eSilencerStatus == ALife::eAddonAttachable && (m_flagsAddOnState & CSE_ALifeItemWeapon::eWeaponAddonSilencer),
+		m_eGrenadeLauncherStatus == ALife::eAddonAttachable && (m_flagsAddOnState & CSE_ALifeItemWeapon::eWeaponAddonGrenadeLauncher),
+	};
+	for (int s = 0; s < PART_SUBSYSTEMS; ++s)
+		if (vanilla[s] && !m_role_parts[s].empty())
+			Msg("! [weapon parts] %s [%u] has a vanilla %s addon and %u %s part(s); the parts win", cNameSect().c_str(), ID(),
+				part_subsystem_role(EPartSubsystem(s)), u32(m_role_parts[s].size()), part_subsystem_role(EPartSubsystem(s)));
+}
+
+const xr_vector<u16>& CWeapon::role_parts(EPartSubsystem s)
+{
+	if (m_role_parts_dirty)
+		refresh_role_parts();
+	static const xr_vector<u16> none;
+	return s < PART_SUBSYSTEMS ? m_role_parts[s] : none;
+}
+
+u16 CWeapon::active_sight()
+{
+	return role_parts(PART_SIGHT).empty() ? 0 : weapon_parts::active_sight(m_instance);
+}
+
+bool CWeapon::vanilla_addon_blocked(PIItem item)
+{
+	if (smart_cast<CScope*>(item))
+		return part_takes_over(PART_SIGHT);
+	if (smart_cast<CSilencer*>(item))
+		return part_takes_over(PART_MUZZLE);
+	if (smart_cast<CGrenadeLauncher*>(item))
+		return part_takes_over(PART_LAUNCHER);
+	return false;
 }
 
 void CWeapon::on_shell_attachments(bool create)
@@ -2412,6 +2472,10 @@ void CWeapon::RerunLoad(SWeaponRestoreReport* report)
 	if (s.zoomed)
 		OnZoomOut();
 	runtime_prepare_load();
+	// UpdateUIScope caches the config's scope textures; the new config (a sight part, 5b-2) may name others.
+	// The upgrade replay below sets them again where an upgrade gives them.
+	m_primary_scope_tex_name = nullptr;
+	m_secondary_scope_tex_name = nullptr;
 
 	Load(section.c_str());
 	// Upgrades change config values Load just reset, addon statuses among them, so replay them as net_Spawn does.

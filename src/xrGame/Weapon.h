@@ -164,13 +164,28 @@ public:
 	// 4b (WEAPON_ENGINE_PLAN.md 8.2): parts drawn from the record's placement, in both views
 	virtual void RenderAttachments();
 	virtual void render_hud_parts(IKinematics* model, const Fmatrix& xform);
-	virtual void on_instance_parts_changed() { m_part_tree_dirty = true; }
+	virtual void on_instance_parts_changed() { m_part_tree_dirty = true; m_role_parts_dirty = true; }
+
+	// 5b (WEAPON_ENGINE_PLAN.md 9.1): the subsystems fitted parts take over, by role. A subsystem with role parts
+	// is the parts'; the others stay vanilla (grandfathering).
+	enum EPartSubsystem { PART_SIGHT = 0, PART_MUZZLE, PART_LAUNCHER, PART_SUBSYSTEMS };
+	static LPCSTR part_subsystem_role(EPartSubsystem s);
+	const xr_vector<u16>& role_parts(EPartSubsystem s);   // fitted parts with that role, in record order
+	bool part_takes_over(EPartSubsystem s) { return !role_parts(s).empty(); }
+	// The sight in use: the state value active_sight when it names a fitted sight, else the sight with the
+	// fewest mounts between it and the gun, then the first in the record. 0 when there is none.
+	u16 active_sight();
+	// A vanilla scope, silencer or launcher for a subsystem that parts have taken over: can't be attached
+	bool vanilla_addon_blocked(PIItem item);
 	void parts_update();                   // rebuilds the part tree if the parts changed, applies the view
 	CWeaponPartTree* part_tree_rw() { parts_update(); return m_part_tree; }
 	const CWeaponPartTree* part_tree() const { return m_part_tree; }
 private:
 	CWeaponPartTree* m_part_tree = nullptr;
 	bool m_part_tree_dirty = false;
+	xr_vector<u16> m_role_parts[PART_SUBSYSTEMS];
+	bool m_role_parts_dirty = true;
+	void refresh_role_parts();
 	void parts_rebuild();
 	bool m_in_place_parts = false;     // 4d: a place_parts hook is running
 	xr_vector<shared_str> m_part_hides;   // 4c: gun bones the drawn parts hide
