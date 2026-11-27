@@ -8,6 +8,7 @@
 #include "pch_script.h"
 
 #include "inventory_upgrade_manager.h"
+#include "Weapon.h"
 #include "inventory_upgrade_base.h"
 #include "inventory_upgrade.h"
 #include "inventory_upgrade_root.h"
@@ -370,7 +371,11 @@ void Manager::test_all_upgrades( CInventoryItem& item )
 
 			if (res == result_ok)
 			{
-				if (!loading)
+				// 5a (WEAPON_ENGINE_PLAN.md 10.1): a weapon keeps its rounds, addons and parts through an upgrade.
+				// The upgrade is applied, then the weapon rebuilds with the clamped restore of 3b, which gives back
+				// only what the new config no longer takes. Other items keep the old order.
+				CWeapon* weapon = smart_cast<CWeapon*>(&item);
+				if (!loading && !weapon)
 				{
 					item.pre_install_upgrade();
 				}
@@ -379,6 +384,13 @@ void Manager::test_all_upgrades( CInventoryItem& item )
 				{
 					upgrade->run_effects(loading);
 					item.add_upgrade(upgrade_id, loading);
+					if (!loading && weapon)
+					{
+						if (weapon->can_reload_config())
+							weapon->RerunLoad();
+						else
+							weapon->request_reload_config();
+					}
 
 					if (g_upgrades_log == 1)
 					{

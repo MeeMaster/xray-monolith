@@ -18,6 +18,8 @@
 //       string paintjob
 //   u8  runtime present (0/1); if 1: u8 fire mode, u8 gl mode, u16 round count, then u8 per round
 //   u16 modifier count, then (source, key, u8 mode, f32 value) per modifier; versions 1 and 2 stop before it
+//   u8 self prop count, then (key, value) per prop; u16 self blob size, then the bytes; string self paintjob
+//       (5a, the item's own part-level data); versions 1 to 3 stop before it
 // Any change to this layout bumps VERSION.
 
 namespace
@@ -137,7 +139,8 @@ bool SInstancePart::operator==(const SInstancePart& o) const
 
 bool CSE_InstanceRecord::empty() const
 {
-	return !is_opaque() && overrides.empty() && parts.empty() && !runtime.valid && next_part_id == 1 && modifiers.empty();
+	return !is_opaque() && overrides.empty() && parts.empty() && !runtime.valid && next_part_id == 1 && modifiers.empty() &&
+		self_props.empty() && self_blob.empty() && !self_paintjob.size();
 }
 
 void CSE_InstanceRecord::clear()
@@ -147,13 +150,17 @@ void CSE_InstanceRecord::clear()
 	parts.clear();
 	runtime = SInstanceRuntime();
 	modifiers.clear();
+	self_props.clear();
+	self_blob.clear();
+	self_paintjob = shared_str();
 	m_opaque.clear();
 }
 
 bool CSE_InstanceRecord::operator==(const CSE_InstanceRecord& o) const
 {
 	return overrides == o.overrides && next_part_id == o.next_part_id && parts == o.parts &&
-		runtime == o.runtime && modifiers == o.modifiers && m_opaque == o.m_opaque;
+		runtime == o.runtime && modifiers == o.modifiers && m_opaque == o.m_opaque && self_props == o.self_props &&
+		self_blob == o.self_blob && self_paintjob == o.self_paintjob;
 }
 
 void CSE_InstanceRecord::write_body(xr_vector<u8>& out) const
@@ -198,12 +205,18 @@ void CSE_InstanceRecord::write_body(xr_vector<u8>& out) const
 		w.u8_(m.mode);
 		w.f32_(m.value);
 	}
+	w.u8_(u8(self_props.size()));
+	w.props(self_props);
+	w.u16_(u16(self_blob.size()));
+	if (!self_blob.empty())
+		w.bytes(self_blob.data(), u32(self_blob.size()));
+	w.str(self_paintjob);
 }
 
 bool CSE_InstanceRecord::fits() const
 {
 	if (overrides.size() > MAX_OVERRIDES || parts.size() > MAX_PARTS || runtime.rounds.size() > MAX_ROUNDS ||
-		modifiers.size() > MAX_MODIFIERS)
+		modifiers.size() > MAX_MODIFIERS || self_props.size() > MAX_PROPS || self_blob.size() > MAX_BLOB)
 		return false;
 	for (const SInstancePart& part : parts)
 		if (part.props.size() > MAX_PROPS || part.upgrades.size() > MAX_UPGRADES || part.blob.size() > MAX_BLOB)
@@ -365,12 +378,121 @@ bool CSE_InstanceRecord::read_body(const u8* data, u32 size, u8 version)
 		}
 	}
 
+	if (version >= 4)
+	{
+		const u8 self_count = r.u8_();
+		if (self_count > MAX_PROPS) r.fail("too many self props");
+		r.props(self_props, self_count);
+		const u16 blob_size = r.u16_();
+		if (blob_size > MAX_BLOB) r.fail("self blob too large");
+		if (r.ok && blob_size)
+		{
+			self_blob.resize(blob_size);
+			r.bytes(self_blob.data(), blob_size);
+		}
+		self_paintjob = r.str();
+	}
+
 	if (r.ok && r.p != r.end)
 		r.fail("unexpected bytes after the body");
 
 	if (!r.ok)
 		Msg("! [instance record] damaged record (%s), ignored", r.error);
 	return r.ok;
+}
+
+void CSE_InstanceRecord::subtree(u16 id, xr_vector<u16>& out) const
+{
+	out.clear();
+	if (!find_part(id))
+		return;
+	out.push_back(id);
+	for (u32 i = 0; i < out.size(); ++i) // breadth first: parents before children
+		for (const SInstancePart& p : parts)
+			if (p.parent == out[i])
+				out.push_back(p.id);
+}
+
+bool CSE_InstanceRecord::graft(u16 parent, const CSE_InstanceRecord& src, u16* first_id)
+{
+	if (first_id)
+		*first_id = 0;
+	if (is_opaque() || src.is_opaque() || (parent && !find_part(parent)))
+		return false;
+	if (src.parts.empty())
+		return true;
+	if (parts.size() + src.parts.size() > MAX_PARTS || u32(next_part_id) + src.parts.size() >= 0xffff)
+		return false;
+
+	CSE_InstanceRecord copy = *this;
+	xr_vector<std::pair<u16, u16>> ids; // src id -> new id
+	auto mapped = [&](u16 id) -> u16 {
+		for (auto& m : ids)
+			if (m.first == id)
+				return m.second;
+		return 0;
+	};
+	// Parents before children, whatever order src keeps them in
+	xr_vector<const SInstancePart*> todo;
+	for (const SInstancePart& p : src.parts)
+		todo.push_back(&p);
+	bool progress = true;
+	while (!todo.empty() && progress)
+	{
+		progress = false;
+		for (auto it = todo.begin(); it != todo.end();)
+		{
+			const SInstancePart& p = **it;
+			const u16 new_parent = p.parent ? mapped(p.parent) : parent;
+			if (p.parent && !new_parent)
+			{
+				++it;
+				continue;
+			}
+			SInstancePart n = p;
+			n.id = copy.next_part_id++;
+			n.parent = new_parent;
+			copy.parts.push_back(n);
+			ids.push_back({ p.id, n.id });
+			if (first_id && !*first_id && !p.parent)
+				*first_id = n.id;
+			it = todo.erase(it);
+			progress = true;
+		}
+	}
+	if (!todo.empty() || !copy.fits() || copy.byte_size() > MAX_BYTES)
+		return false; // a part whose parent isn't in src, or a cap
+	*this = copy;
+	return true;
+}
+
+bool CSE_InstanceRecord::extract(u16 id, CSE_InstanceRecord& out) const
+{
+	out.clear();
+	const SInstancePart* top = find_part(id);
+	if (is_opaque() || !top)
+		return false;
+	out.self_props = top->props;
+	out.self_blob = top->blob;
+	out.self_paintjob = top->paintjob;
+
+	xr_vector<u16> ids;
+	subtree(id, ids);
+	xr_vector<std::pair<u16, u16>> map;
+	for (u32 i = 1; i < ids.size(); ++i) // ids[0] is the part itself
+	{
+		const SInstancePart* p = find_part(ids[i]);
+		SInstancePart n = *p;
+		n.id = out.next_part_id++;
+		n.parent = 0;
+		if (p->parent != id)
+			for (auto& m : map)
+				if (m.first == p->parent)
+					n.parent = m.second;
+		map.push_back({ p->id, n.id });
+		out.parts.push_back(n);
+	}
+	return true;
 }
 
 LPCSTR CSE_InstanceRecord::get_override(LPCSTR key) const
@@ -884,6 +1006,53 @@ bool CSE_InstanceRecord::self_test()
 		check(a.set_part_prop(id, "offset", nullptr) && !a.get_part_prop(id, "offset") && !a.set_part_prop(id, "offset", ""),
 			"clearing a part prop removes it, clearing it again returns false");
 		check(a.same_config(b), "part props change no config");
+	}
+
+	// 11. Subtrees and self data (5a)
+	{
+		CSE_InstanceRecord gun;
+		const u16 light = gun.add_part(0, "side", "mw_light");
+		const u16 bat1 = gun.add_part(light, "battery", "mw_battery");
+		const u16 bat2 = gun.add_part(light, "battery2", "mw_battery");
+		const u16 cap = gun.add_part(bat1, "cap", "mw_cap");
+		gun.find_part(bat1)->set_condition(0.5f);
+		gun.find_part(light)->blob.push_back(7);
+		gun.set_part_prop(light, "on", "1");
+		xr_vector<u16> ids;
+		gun.subtree(light, ids);
+		check(ids.size() == 4 && ids[0] == light, "subtree lists a part and everything below it, parent first");
+
+		CSE_InstanceRecord item;
+		check(gun.extract(light, item) && item.parts.size() == 3 && item.self_blob.size() == 1 &&
+			!xr_strcmp(item.self_props[0].value, "1"), "extract copies the part as an item with its contents");
+		const SInstancePart* ic = nullptr;
+		const SInstancePart* ib = nullptr;
+		for (const SInstancePart& p : item.parts)
+		{
+			if (p.section == "mw_cap") ic = &p;
+			if (p.section == "mw_battery" && p.condition_f() < 0.6f) ib = &p;
+		}
+		check(ib && ic && ib->parent == 0 && ic->parent == ib->id, "the extracted contents keep their structure, re-rooted");
+
+		CSE_InstanceRecord b;
+		P.write_start();
+		item.write(P);
+		P.r_pos = 0;
+		b.read(P);
+		check(b == item, "self data and contents survive a round trip");
+
+		gun.remove_part(light);
+		CSE_InstanceRecord gun2 = gun;
+		const u16 fitted = gun2.add_part(0, "side", "mw_light");
+		u16 first = 0;
+		check(gun2.graft(fitted, item, &first) && gun2.parts.size() == 4 && first != 0 &&
+			gun2.find_part(first)->parent == fitted, "graft puts the contents back under the new part");
+		check(!gun2.graft(999, item) && gun2.parts.size() == 4, "graft under a missing part changes nothing");
+		CSE_InstanceRecord full;
+		for (int i = 0; i < MAX_PARTS - 1; ++i)
+			full.add_part(0, "m", "x");
+		check(!full.graft(0, item) && full.parts.size() == MAX_PARTS - 1, "graft past the part cap changes nothing");
+		(void)bat2; (void)cap;
 	}
 
 	Msg("%s [instance record test] %s", failed ? "!" : "-", failed ? "FAILED" : "all checks passed");

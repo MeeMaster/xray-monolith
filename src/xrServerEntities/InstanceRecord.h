@@ -86,7 +86,7 @@ public:
 	// written back unchanged, so a save made by a newer build survives a round trip here.
 	// 1: first format. 2: a flags byte per override (3c); a version 1 record reads every override as config.
 	// 3: script modifiers (3d); older records have none.
-	enum : u8 { VERSION = 3 };
+	enum : u8 { VERSION = 4 };
 
 	// Hard caps, so a record can never push a spawn packet near its 16 KB limit
 	enum : u32
@@ -108,6 +108,12 @@ public:
 	xr_vector<SInstancePart> parts;
 	SInstanceRuntime runtime;
 	xr_vector<SInstanceModifier> modifiers;   // script modifiers (3d), in the order they were added
+
+	// 5a: the item's own part-level data, for an item that is a part (a flashlight off the gun). When it is
+	// fitted these become the part's props, blob and paintjob; when the part is removed they come back here.
+	InstanceProps self_props;
+	xr_vector<u8> self_blob;
+	shared_str self_paintjob;
 
 	bool empty() const;
 	void clear();
@@ -144,6 +150,17 @@ public:
 	const SInstancePart* find_part(u16 id) const;
 	u16 add_part(u16 parent, LPCSTR mount, LPCSTR section, float pos = 0.f);   // 0 on failure
 	u32 remove_part(u16 id);                                                       // removes its children too; returns the count
+	// 5a subtrees. graft: adds every part of src under parent (0 = the item itself), keeping their structure,
+	// with new ids; src's top-level parts take mount names and positions as they are. All or nothing: false (and
+	// no change) when parent is missing, a cap would be passed, or either record is opaque. first_id: the id src's
+	// first top-level part got, 0 when src has no parts.
+	bool graft(u16 parent, const CSE_InstanceRecord& src, u16* first_id = nullptr);
+	// extract: out becomes a record for part id as an item: its props, blob and paintjob as out's self data and
+	// everything mounted on it (recursively) as out's parts, renumbered from 1. Doesn't change this record.
+	bool extract(u16 id, CSE_InstanceRecord& out) const;
+	// The ids of a part and everything below it, parents before children
+	void subtree(u16 id, xr_vector<u16>& out) const;
+
 	// Part props (4a): placement and mod state. A null or empty value clears the key. false when the part is
 	// missing, the key is empty, a cap or the opaque state forbids it, or clearing a key that isn't set.
 	LPCSTR get_part_prop(u16 id, LPCSTR key) const;

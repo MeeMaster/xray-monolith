@@ -247,6 +247,12 @@ class_<CScriptGameObject> script_register_game_object2(class_<CScriptGameObject>
 		.def("attach_part_light", &instance_record_script::go_attach_part_light_bone)
 		.def("detach_part_light", &instance_record_script::go_detach_part_light)
 		.def("get_part_tree_stats", &instance_record_script::go_get_part_tree_stats, raw<1>())
+		.def("fit_part", &instance_record_script::go_fit_part_item)
+		.def("fit_part", &instance_record_script::go_fit_part_item_props)
+		.def("fit_part", &instance_record_script::go_fit_part_section)
+		.def("fit_part", &instance_record_script::go_fit_part_section_props)
+		.def("remove_part", &instance_record_script::go_take_off_part, raw<1>())
+		.def("remove_part", &instance_record_script::go_take_off_part_opts, raw<1>())
 		.def("get_part_transform", &instance_record_script::go_get_part_transform, raw<1>())
 		.def("get_part_transform", &instance_record_script::go_get_part_transform_origin, raw<1>())
 

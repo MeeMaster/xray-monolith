@@ -41,14 +41,16 @@ void set_condition_script(CSE_ALifeInventoryItem* item, float value)
 using namespace luabind;
 
 #pragma optimize("s",on)
-void CSE_ALifeInventoryItem::script_register(lua_State* L)
+
+// The inventory item methods, bound on cse_alife_inventory_item and again on cse_alife_item (5a). luabind finds
+// methods of a class's second base only through the script classes of se_item.script, so a plain item with no
+// script class (a bandage, for one) saw none of them: no condition, no upgrades, no record.
+template <class C>
+static C def_inventory_item(C&& c)
 {
-	module(L)[
-		class_<CSE_ALifeInventoryItem>
-		("cse_alife_inventory_item")
-		//			.def(		constructor<LPCSTR>())
-		.def("has_upgrade", &has_upgrade)
-		.def("add_upgrade", &add_upgrade)
+	return std::move(c)
+		.def("has_upgrade", &CSE_ALifeInventoryItem::has_upgrade)
+		.def("add_upgrade", &CSE_ALifeInventoryItem::add_upgrade)
 		.property("condition", &get_condition_script, &set_condition_script)
 		// WEAPON_ENGINE_PLAN.md 14 (2h): the instance record; edits go through the game object while there is one
 		.def("get_override", &instance_record_script::se_get_override)
@@ -73,20 +75,27 @@ void CSE_ALifeInventoryItem::script_register(lua_State* L)
 		.def("explain_stat", &instance_record_script::se_explain_stat, raw<1>())
 		.def("get_part_prop", &instance_record_script::se_get_part_prop)
 		.def("set_part_prop", &instance_record_script::se_set_part_prop)
-	];
+		.def("fit_part", &instance_record_script::se_fit_part_item)
+		.def("fit_part", &instance_record_script::se_fit_part_item_props)
+		.def("fit_part", &instance_record_script::se_fit_part_section)
+		.def("fit_part", &instance_record_script::se_fit_part_section_props)
+		.def("remove_part", &instance_record_script::se_take_off_part, raw<1>())
+		.def("remove_part", &instance_record_script::se_take_off_part_opts, raw<1>());
+}
+
+void CSE_ALifeInventoryItem::script_register(lua_State* L)
+{
+	module(L)[def_inventory_item(class_<CSE_ALifeInventoryItem>("cse_alife_inventory_item"))];
 }
 
 void CSE_ALifeItem::script_register(lua_State* L)
 {
-	module(L)[
-		luabind_class_item2(
-			//		luabind_class_abstract2(
-			CSE_ALifeItem,
-			"cse_alife_item",
-			CSE_ALifeDynamicObjectVisual,
-			CSE_ALifeInventoryItem
-		)
-	];
+	module(L)[def_inventory_item(luabind_class_item2(
+		CSE_ALifeItem,
+		"cse_alife_item",
+		CSE_ALifeDynamicObjectVisual,
+		CSE_ALifeInventoryItem
+	))];
 }
 
 void CSE_ALifeItemTorch::script_register(lua_State* L)

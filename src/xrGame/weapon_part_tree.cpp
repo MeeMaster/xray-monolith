@@ -318,6 +318,19 @@ u32 CWeaponPartTree::drawn() const
 	return n;
 }
 
+// 5a: the model a part section gives a fitted part: part_visual (the part's own model, apart from the item's
+// world visual), else visual. null when it has neither.
+static LPCSTR section_part_visual(const shared_str& section)
+{
+	if (!section.size() || !pSettings->section_exist(section))
+		return nullptr;
+	if (pSettings->line_exist(section, "part_visual"))
+		return pSettings->r_string(section, "part_visual");
+	if (pSettings->line_exist(section, "visual"))
+		return pSettings->r_string(section, "visual");
+	return nullptr;
+}
+
 void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, LPCSTR owner, CGameObject* holder)
 {
 	clear();
@@ -356,17 +369,22 @@ void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, 
 			node.parent = part.parent;
 			node.section = part.section;
 
+			// 5a: visual = none (the prop) or part_visual = none (the part section) marks a data-only part: never drawn, no log
+			LPCSTR vis_prop = record.get_part_prop(part.id, "visual");
+			LPCSTR vis_sect = section_part_visual(part.section);
+			const bool data_only = !_stricmp(vis_prop ? vis_prop : (vis_sect ? vis_sect : ""), "none");
+
 			weapon_parts::SPlacement pl;
-			if (parent && !parent->att)
+			if (data_only)
+				node.reason = "data only (visual = none)";
+			else if (parent && !parent->att)
 				node.reason = "its parent part is not drawn";
 			else if (!weapon_parts::read_placement(part, pl))
 				node.reason = "no placement (bone) yet";
 			else
 			{
 				node.bone = pl.bone;
-				LPCSTR model = pl.visual.size() ? pl.visual.c_str()
-					: (part.section.size() && pSettings->section_exist(part.section) && pSettings->line_exist(part.section, "visual"))
-					? pSettings->r_string(part.section, "visual") : nullptr;
+				LPCSTR model = pl.visual.size() ? pl.visual.c_str() : section_part_visual(part.section);
 				xr_string resolved;
 				if (!model)
 					node.reason = "no model: set the visual prop, or give the part section a visual";
@@ -415,7 +433,7 @@ void CWeaponPartTree::build(const CSE_InstanceRecord& record, IKinematics* gun, 
 				LPCSTR vis = record.get_part_prop(part.id, "visual");
 				node.visual_prop = vis ? vis : "";
 			}
-			if (!node.att)
+			if (!node.att && !data_only)
 				Msg("~ [weapon parts] %s: part %u [%s] not drawn: %s", owner, u32(part.id), part.section.c_str(), node.reason.c_str());
 			m_nodes.push_back(node);
 		}

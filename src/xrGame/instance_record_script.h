@@ -51,6 +51,18 @@ namespace instance_record_script
 	bool go_detach_part_light(CScriptGameObject* self, u16 id);
 	::luabind::object go_get_part_tree_stats(lua_State* L, CScriptGameObject* self);
 
+	// 5a fit and remove (WEAPON_ENGINE_PLAN.md 10.1), on any item with a record: a gun or a loose part item.
+	// fit_part(item | section, parent_id, mount [, props]): the item's state and contents move into a new part,
+	// the item goes; returns the part id, 0 on failure (nothing changed).
+	u16 go_fit_part_item(CScriptGameObject* self, CScriptGameObject* item, u16 parent, LPCSTR mount);
+	u16 go_fit_part_item_props(CScriptGameObject* self, CScriptGameObject* item, u16 parent, LPCSTR mount, const ::luabind::object& props);
+	u16 go_fit_part_section(CScriptGameObject* self, LPCSTR section, u16 parent, LPCSTR mount);
+	u16 go_fit_part_section_props(CScriptGameObject* self, LPCSTR section, u16 parent, LPCSTR mount, const ::luabind::object& props);
+	// remove_part(id [, {loose = true}]): the part comes off as an item that keeps its contents (or, loose, every
+	// part as its own item); returns a table of the spawned item ids, nil on failure (nothing changed).
+	::luabind::object go_take_off_part(lua_State* L, CScriptGameObject* self, u16 id);
+	::luabind::object go_take_off_part_opts(lua_State* L, CScriptGameObject* self, u16 id, const ::luabind::object& opts);
+
 	// 4d: the place_parts hooks (WEAPON_ENGINE_PLAN.md 8.1), registered with the global register_place_parts(func).
 	// run_place_parts calls each in registration order with (weapon, parts) and writes the bone, offset and hides
 	// they return into record. true when record changed. owner_name: for log lines.
@@ -82,6 +94,13 @@ namespace instance_record_script
 	::luabind::object se_explain_stat(lua_State* L, CSE_ALifeInventoryItem* self, LPCSTR key);
 	LPCSTR se_get_part_prop(CSE_ALifeInventoryItem* self, u16 id, LPCSTR key);
 	bool se_set_part_prop(CSE_ALifeInventoryItem* self, u16 id, LPCSTR key, const ::luabind::object& value);
+	// 5a fit and remove on server entities: offline items; an online one goes through its object
+	u16 se_fit_part_item(CSE_ALifeInventoryItem* self, CSE_ALifeInventoryItem* item, u16 parent, LPCSTR mount);
+	u16 se_fit_part_item_props(CSE_ALifeInventoryItem* self, CSE_ALifeInventoryItem* item, u16 parent, LPCSTR mount, const ::luabind::object& props);
+	u16 se_fit_part_section(CSE_ALifeInventoryItem* self, LPCSTR section, u16 parent, LPCSTR mount);
+	u16 se_fit_part_section_props(CSE_ALifeInventoryItem* self, LPCSTR section, u16 parent, LPCSTR mount, const ::luabind::object& props);
+	::luabind::object se_take_off_part(lua_State* L, CSE_ALifeInventoryItem* self, u16 id);
+	::luabind::object se_take_off_part_opts(lua_State* L, CSE_ALifeInventoryItem* self, u16 id, const ::luabind::object& opts);
 }
 
 // 4a: global functions for the script resolver (WEAPON_ENGINE_PLAN.md 8.1): model_bones, bone_bind_transform

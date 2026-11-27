@@ -36,6 +36,9 @@
 -- prepare() also places the marked gun's scope (PLACEMENT), and verify() checks the placement.
 --
 -- Engine-drawn parts (4b, WEAPON_ENGINE_PLAN.md 8.2):
+--   run_string mw_ir.fits()           5a fit and remove with test items (a light holding batteries); runs in steps.
+--   run_string mw_ir.offline()        5a fit and remove on offline server entities (made on another level).
+--   run_string mw_ir.upgrade_keep()   5a a mechanic upgrade keeps the rounds and parts (a fresh AK in your inventory).
 --   run_string mw_ir.moves()          after parts(): 4d placement-only moves and place_parts hooks (moves_clear()).
 --   run_string mw_ir.hooks()          after parts(): script hooks on the test parts (bone visibility by view,
 --                                     part transforms, a light on part A). hooks_clear() detaches the light.
@@ -1314,4 +1317,271 @@ function nudge(h)
 	local builds, m1 = stats(w)
 	say(string.format("part B is now %.2f m above part A (%s, %d builds, %d moves)", h,
 		m1 > m0 and "moved in place" or "no move", builds, m1))
+end
+
+---------------------------------------------------------------------------
+-- fits(): 5a fit and remove (WEAPON_ENGINE_PLAN.md 10.1) with the test items in
+-- configs\mod_system_mw_parts_test.ltx: a light (mw_pt_light) that holds batteries (mw_pt_battery, data only).
+-- Runs in steps, because spawned items take a moment to come online. Needs a gun in your hands.
+---------------------------------------------------------------------------
+
+local FIT = {}
+
+-- get_parts() is keyed by part path; this gives its parts as a list
+local function plist(obj)
+	local out = {}
+	for _, p in pairs(obj and obj:get_parts() or {}) do out[#out + 1] = p end
+	return out
+end
+
+local function part_of(w, id)
+	for _, p in pairs(w:get_parts()) do
+		if p.id == id then return p end
+	end
+end
+
+local function parts_by_section(obj, section)
+	local out = {}
+	for _, p in pairs(obj:get_parts()) do
+		if p.section == section then out[#out + 1] = p end
+	end
+	return out
+end
+
+local function wait_online(ids, step, then_do)
+	local tries = 0
+	CreateTimeEvent("mw_ir", "fits_" .. step, 0.3, function()
+		tries = tries + 1
+		local all = true
+		for _, id in ipairs(ids) do
+			if not level.object_by_id(id) then all = false end
+		end
+		if all or tries > 20 then
+			if not all then
+				check(false, step .. ": the spawned items came online")
+				finish("fits")
+			else
+				then_do()
+			end
+			return true
+		end
+		ResetTimeEvent("mw_ir", "fits_" .. step, 0.3)
+		return false
+	end)
+end
+
+local function fits_d()
+	local w = level.object_by_id(FIT.gun)
+	local light, bat = level.object_by_id(FIT.loose_ids[1]), level.object_by_id(FIT.loose_ids[2])
+	check(light and bat and #plist(light) == 0 and #plist(bat) == 0,
+		"remove_part with loose = true gave two items with nothing inside")
+	local lb = light and light:section() == "mw_pt_battery" and light or bat
+	check(lb and math.abs(lb:condition() - 0.4) < 0.01, "the loose battery item kept its condition: " .. tostring(lb and lb:condition()))
+	check(#parts_by_section(w, "mw_pt_light") == 0 and #parts_by_section(w, "mw_pt_battery") == 0, "the gun has no test light or battery left")
+	for _, id in ipairs(FIT.cleanup) do alife_release_id(id) end
+	finish("fits")
+	say("test items removed. Expected log lines: one refusal for fitting an item into itself, one for a missing parent.")
+end
+
+local function fits_c()
+	local w = level.object_by_id(FIT.gun)
+	local item = level.object_by_id(FIT.light_item)
+	local bat2 = level.object_by_id(FIT.bat2_item)
+	local inside = item and parts_by_section(item, "mw_pt_battery") or {}
+	check(#inside == 1 and math.abs(inside[1].condition - 0.4) < 0.01,
+		"the light item came off with its battery inside, condition kept: " .. tostring(#inside))
+	check(bat2 and bat2:section() == "mw_pt_battery", "the second battery came off the light on the gun as its own item")
+	FIT.cleanup[#FIT.cleanup + 1] = FIT.bat2_item
+
+	-- Refit the light item: its contents and its own data (the "on" prop) go back with it
+	local lid = w:fit_part(item, 0, PT .. "light", FIT.place)
+	table.remove(FIT.cleanup, 1) -- the light item is fitted again, so it is gone
+	local p = lid ~= 0 and part_of(w, lid)
+	check(p and p.props.on == "1" and p.props.bone ~= nil, "refitting the light brings back its own data ('on' = " .. tostring(p and p.props.on) .. ")")
+	local refit = parts_by_section(w, "mw_pt_battery")
+	check(#refit == 1 and refit[1].parent == lid and math.abs(refit[1].condition - 0.4) < 0.01, "and its battery, still inside it")
+
+	-- Strip it: every part comes off as its own item
+	FIT.loose_ids = w:remove_part(lid, { loose = true }) or {}
+	check(#FIT.loose_ids == 2, "remove_part with loose = true spawned 2 items: " .. #FIT.loose_ids)
+	for _, id in ipairs(FIT.loose_ids) do FIT.cleanup[#FIT.cleanup + 1] = id end
+	wait_online(FIT.loose_ids, "d", fits_d)
+end
+
+local function fits_b()
+	local w = level.object_by_id(FIT.gun)
+	local light = level.object_by_id(FIT.light)
+	local bat1, bat2 = level.object_by_id(FIT.bat1), level.object_by_id(FIT.bat2)
+	bat1:set_condition(0.4)
+
+	-- Refusals change nothing and destroy nothing
+	check(light:fit_part(light, 0, "self") == 0, "an item can't be fitted into itself")
+	check(w:fit_part(bat2, 9999, "x") == 0 and level.object_by_id(FIT.bat2), "fitting onto a missing part is refused, the item stays")
+
+	-- A battery into the loose light, in the backpack
+	local b1 = light:fit_part(bat1, 0, "battery")
+	check(b1 ~= 0 and #parts_by_section(light, "mw_pt_battery") == 1, "a battery goes into the loose light item")
+
+	-- The light (with its battery) onto the gun
+	local root, vis
+	for name, bn in pairs(model_bones(w:section()) or {}) do
+		if bn.parent == "" then root = name; FIT.root_bone = bn end
+	end
+	vis = ini_sys:r_string_ex(w:section(), "visual")
+	FIT.place = { bone = root, visual = vis, offset = offset_in_bone(FIT.root_bone, { 0, 0.36, 0 }, { 0, 0, 0 }) }
+	local lid = w:fit_part(light, 0, PT .. "light", FIT.place)
+	local lp = lid ~= 0 and part_of(w, lid)
+	local inside = parts_by_section(w, "mw_pt_battery")
+	check(lp and lp.section == "mw_pt_light", "the light goes onto the gun: part " .. tostring(lid))
+	check(#inside == 1 and inside[1].parent == lid and math.abs(inside[1].condition - 0.4) < 0.01,
+		"its battery came along inside it, condition 0.4: " .. tostring(inside[1] and inside[1].condition))
+	local t = tree_by_id(w)
+	check(t[lid] and t[lid].drawn, "the light is drawn on the gun (0.36 m up)")
+	check(inside[1] and t[inside[1].id] and not t[inside[1].id].drawn and t[inside[1].id].reason == "data only (visual = none)",
+		"the battery is a data-only part: " .. tostring(inside[1] and t[inside[1].id] and t[inside[1].id].reason))
+
+	-- A second battery into the light while it is on the gun, then out again
+	local b2 = w:fit_part(bat2, lid, "battery2")
+	check(b2 ~= 0 and part_of(w, b2).parent == lid, "a second battery goes into the light on the gun")
+	local by_section = w:fit_part("mw_pt_battery", lid, "spare")
+	check(by_section ~= 0, "fitting by section, with no item, works too")
+	w:record_remove_part(by_section)
+	w:set_part_prop(lid, "on", "1") -- the light's own data, which must travel with the item
+
+	local out = w:remove_part(b2) or {}
+	check(#out == 1 and #parts_by_section(w, "mw_pt_battery") == 1, "the second battery comes out; the light and the first battery stay")
+	FIT.bat2_item = out[1]
+
+	-- The light comes off, keeping its battery inside
+	out = w:remove_part(lid) or {}
+	check(#out == 1 and #parts_by_section(w, "mw_pt_light") == 0 and #parts_by_section(w, "mw_pt_battery") == 0,
+		"the light comes off as one item; the gun has no light or battery left")
+	FIT.light_item = out[1]
+	FIT.cleanup = { out[1] }
+	wait_online({ FIT.light_item, FIT.bat2_item or 0 }, "c", fits_c)
+end
+
+function fits()
+	local w = gun()
+	if not w then return end
+	begin()
+	if not check(ini_sys:section_exist("mw_pt_light") and ini_sys:section_exist("mw_pt_battery"),
+		"the test items exist (configs/mod_system_mw_parts_test.ltx)") then
+		return finish("fits")
+	end
+	FIT = { gun = w:id() }
+	FIT.light = alife_create_item("mw_pt_light", db.actor).id
+	FIT.bat1 = alife_create_item("mw_pt_battery", db.actor).id
+	FIT.bat2 = alife_create_item("mw_pt_battery", db.actor).id
+	wait_online({ FIT.light, FIT.bat1, FIT.bat2 }, "b", fits_b)
+end
+
+---------------------------------------------------------------------------
+-- offline(): 5a fit and remove on server entities that are offline (WEAPON_ENGINE_PLAN.md 10.1). Creates a gun
+-- and the test items on another level, where they stay offline, works on them and releases them. All in one go.
+---------------------------------------------------------------------------
+
+function offline()
+	begin()
+	if not check(ini_sys:section_exist("mw_pt_light"), "the test items exist (configs/mod_system_mw_parts_test.ltx)") then
+		return finish("offline")
+	end
+	local gg = game_graph()
+	local here = gg:vertex(db.actor:game_vertex_id()):level_id()
+	local gv
+	for i = 0, 20000 do
+		if gg:valid_vertex_id(i) and gg:vertex(i):level_id() ~= here then gv = i break end
+	end
+	if not check(gv, "found a game vertex on another level") then return finish("offline") end
+	local v = gg:vertex(gv)
+	local function make(section)
+		return alife():create(section, v:level_point(), v:level_vertex_id(), gv)
+	end
+	local raw_gun, raw_light, raw_bat = make("wpn_ak74"), make("mw_pt_light"), make("mw_pt_battery")
+	local gun_id, light_id, bat_id = raw_gun.id, raw_light.id, raw_bat.id
+	local function online(id) local o = alife():object(id) return o and o.online end
+	check(online(gun_id) == false and online(light_id) == false and online(bat_id) == false, "a gun and two items, offline")
+
+	-- A plain item comes to Lua as cse_abstract; alife_inventory_item gives it its inventory item methods
+	check(type(raw_light.get_parts) ~= "function", "a plain item from alife():create has no record methods (" .. tostring(raw_light) .. ")")
+	local se_gun, se_light, se_bat = alife_inventory_item(raw_gun), alife_inventory_item(light_id), alife_inventory_item(raw_bat)
+	check(se_gun and se_light and se_bat and type(se_light.fit_part) == "function" and type(se_light.condition) == "number",
+		"alife_inventory_item (by object or id) gives them: " .. tostring(se_light))
+	check(alife_inventory_item(db.actor:id()) == nil, "alife_inventory_item of something that isn't an item is nil")
+	if not (se_gun and se_light and se_bat) then
+		for _, id in ipairs({ gun_id, light_id, bat_id }) do local o = alife():object(id) if o then alife():release(o, true) end end
+		return finish("offline")
+	end
+	se_bat.condition = 0.3
+
+	local b = se_light:fit_part(se_bat, 0, "battery")
+	check(b ~= 0 and #plist(se_light) == 1 and alife():object(bat_id) == nil,
+		"a battery into the offline light; the battery entity is gone")
+
+	local lid = se_gun:fit_part(se_light, 0, "mw_pt_light", { visual = "none" })
+	local light, bat
+	for _, p in pairs(se_gun:get_parts()) do
+		if p.section == "mw_pt_light" then light = p elseif p.section == "mw_pt_battery" then bat = p end
+	end
+	check(lid ~= 0 and light and bat and bat.parent == lid and math.abs(bat.condition - 0.3) < 0.01 and alife():object(light_id) == nil,
+		"the light onto the offline gun, its battery inside (condition " .. tostring(bat and bat.condition) .. ")")
+
+	local out = se_gun:remove_part(lid) or {}
+	local raw_item = out[1] and alife():object(out[1])
+	local item = out[1] and alife_inventory_item(out[1])
+	local inside = plist(item)
+	check(#out == 1 and item and #inside == 1 and inside[1].section == "mw_pt_battery" and #plist(se_gun) == 0,
+		"remove_part spawns the light with its battery inside; the gun is empty")
+	check(raw_item and raw_item.online == false and raw_item.parent_id == 65535 and raw_item.m_game_vertex_id == gv,
+		"the light item is offline, on the ground where the gun is")
+
+	local strip = {}
+	if item then
+		local g2 = se_gun:fit_part(item, 0, "mw_pt_light")
+		strip = se_gun:remove_part(g2, { loose = true }) or {}
+	end
+	check(#strip == 2, "fitted again and stripped: 2 loose items")
+
+	for _, id in ipairs(strip) do
+		local o = alife():object(id)
+		if o then alife():release(o, true) end
+	end
+	alife():release(alife():object(gun_id), true)
+	finish("offline")
+end
+
+---------------------------------------------------------------------------
+-- upgrade_keep(): 5a, a mechanic upgrade keeps the rounds and the parts. Spawns a wpn_ak74 in your inventory,
+-- loads it and fits a part, installs a test upgrade (configs/mod_system_mw_stat_mods_test.ltx), checks, removes it.
+---------------------------------------------------------------------------
+
+function upgrade_keep()
+	begin()
+	local id = alife_create_item("wpn_ak74", db.actor).id
+	local tries = 0
+	CreateTimeEvent("mw_ir", "upgrade_keep", 0.3, function()
+		tries = tries + 1
+		local w = level.object_by_id(id)
+		if not w then
+			if tries > 20 then check(false, "the test AK came online") finish("upgrade_keep") return true end
+			ResetTimeEvent("mw_ir", "upgrade_keep", 0.3)
+			return false
+		end
+		w:set_ammo_elapsed(17)
+		local part = w:fit_part("mw_pt_battery", 0, "mw_keep")
+		check(w:get_ammo_in_magazine() == 17 and part ~= 0, "the AK holds 17 rounds and a part")
+		inventory_upgrades.force_upgrade = true
+		local ok = w:install_upgrade("up_firsta_ak74")
+		inventory_upgrades.force_upgrade = false
+		check(ok and w:has_upgrade("up_firsta_ak74"), "the upgrade is installed")
+		check(w:get_ammo_in_magazine() == 17, "the rounds stay in the magazine: " .. w:get_ammo_in_magazine())
+		local kept = false
+		for _, p in pairs(w:get_parts()) do
+			if p.id == part then kept = true end
+		end
+		check(kept, "the part stays fitted")
+		alife_release_id(id)
+		finish("upgrade_keep")
+		return true
+	end)
 end

@@ -20,6 +20,9 @@
 #include "player_hud.h"
 #include "script_light_inline.h"
 #include "script_attachment_manager.h"
+#include "part_items.h"
+#include "alife_simulator.h"
+#include "alife_object_registry.h"
 #include "../Include/xrRender/Kinematics.h"
 
 namespace
@@ -281,6 +284,21 @@ namespace
 	// weapon_bone_pose(id, bone, hud): the bone's current (animated) transform in model space, as model_bones
 	// gives the bind pose: {pos, hpb}. hud: the first-person model (the world model when the gun shares it).
 	// nil when the object, model or bone is missing. For checking placement against the animated pose.
+	// alife_inventory_item(se_obj | id): the server entity as cse_alife_inventory_item, or nil. luabind gives an
+	// entity the type the function that returned it declares (alife():create gives cse_abstract, alife():object
+	// cse_alife_dynamic_object) unless it has a script class from se_item.script, so a plain item (a bandage)
+	// otherwise has no condition, upgrades or record methods in Lua (5a).
+	CSE_ALifeInventoryItem* alife_inventory_item_obj(CSE_Abstract* e)
+	{
+		return e ? e->cast_inventory_item() : nullptr;
+	}
+
+	CSE_ALifeInventoryItem* alife_inventory_item_id(u16 id)
+	{
+		CSE_Abstract* e = ai().get_alife() ? ai().alife().objects().object(id, true) : nullptr;
+		return alife_inventory_item_obj(e);
+	}
+
 	int lua_weapon_bone_pose(lua_State* L)
 	{
 		const u16 id = u16(lua_tointeger(L, 1));
@@ -687,6 +705,321 @@ namespace instance_record_script
 		return t;
 	}
 
+	// ---- 5a fit and remove --------------------------------------------------
+	// On a game object, or on a server entity; an entity whose object is online goes through the object (4.3).
+
+	// The item being edited: a gun, or a loose part item
+	struct SHolder
+	{
+		CInventoryItem* game = nullptr;
+		CSE_ALifeInventoryItem* se = nullptr;
+
+		bool valid() const { return game || se; }
+		LPCSTR name() const { return game ? game->object().cNameSect().c_str() : se->base()->s_name.c_str(); }
+		u16 id() const { return game ? game->object().ID() : se->base()->ID; }
+		// The inventory spawned items go to: the one that holds this item, 0xffff on the ground
+		u16 owner() const
+		{
+			if (game)
+				return game->object().H_Parent() ? game->object().H_Parent()->ID() : u16(-1);
+			return se->base()->ID_Parent;
+		}
+		const CSE_InstanceRecord& record() const { return game ? game->instance_record() : se->m_instance; }
+		bool commit(const CSE_InstanceRecord& r) const
+		{
+			if (game)
+				return game->set_instance_record(r);
+			if (se->m_instance.is_opaque())
+				return false;
+			se->m_instance = r;
+			return true;
+		}
+	};
+
+	static SHolder holder(CScriptGameObject* go)
+	{
+		SHolder h;
+		h.game = game_item(go);
+		return h;
+	}
+
+	static SHolder holder(CSE_ALifeInventoryItem* se)
+	{
+		SHolder h;
+		h.game = online_item(se);
+		if (!h.game)
+			h.se = se;
+		return h;
+	}
+
+	// The item a part comes from
+	struct SSource
+	{
+		shared_str section;
+		float condition = 1.f;
+		xr_vector<shared_str> upgrades;
+		const CSE_InstanceRecord* record = nullptr;
+		u16 id = u16(-1);
+	};
+
+	static bool source(CInventoryItem* item, SSource& s)
+	{
+		if (!item)
+			return false;
+		s.section = item->object().cNameSect();
+		s.condition = item->GetCondition();
+		s.upgrades = item->get_upgrades();
+		s.record = &item->instance_record();
+		s.id = item->object().ID();
+		return true;
+	}
+
+	static bool source(CSE_ALifeInventoryItem* se, SSource& s)
+	{
+		if (!se)
+			return false;
+		if (CInventoryItem* item = online_item(se))
+			return source(item, s);
+		s.section = se->base()->s_name;
+		s.condition = se->m_fCondition;
+		s.upgrades = se->m_upgrades;
+		s.record = &se->m_instance;
+		s.id = se->base()->ID;
+		return true;
+	}
+
+	// The props a script passes, through the same checks as set_part_prop. false: a refused value (logged)
+	static bool apply_props(CSE_InstanceRecord& r, u16 id, const ::luabind::object& props)
+	{
+		if (!props.is_valid() || props.type() == LUA_TNIL)
+			return true;
+		if (props.type() != LUA_TTABLE)
+		{
+			Msg("! [weapon parts] fit_part: props must be a table");
+			return false;
+		}
+		for (::luabind::object::iterator it = props.begin(); it != props.end(); ++it)
+		{
+			::luabind::object key = it.key();
+			if (key.type() != LUA_TSTRING)
+				continue;
+			::luabind::object value(*it);
+			if (!set_part_prop(r, id, ::luabind::object_cast<LPCSTR>(key), value))
+				return false;
+		}
+		return true;
+	}
+
+	// from: the item whose state and contents move into the new part, or null for a fresh part of section
+	static u16 fit(const SHolder& target, const SSource* from, LPCSTR section, u16 parent, LPCSTR mount, const ::luabind::object* props)
+	{
+		if (!target.valid() || !section || !*section)
+			return 0;
+		if (from && from->id == target.id())
+		{
+			Msg("! [weapon parts] fit_part: an item can't be fitted into itself");
+			return 0;
+		}
+		if (!pSettings->section_exist(section))
+		{
+			Msg("! [weapon parts] fit_part: no section [%s]", section);
+			return 0;
+		}
+		CSE_InstanceRecord r = target.record();
+		const u16 id = r.add_part(parent, mount, section);
+		if (!id)
+		{
+			Msg("! [weapon parts] fit_part: [%s] can't go on part %u of %s (missing parent, a cap, or a read-only record)",
+				section, u32(parent), target.name());
+			return 0;
+		}
+		SInstancePart* part = r.find_part(id);
+		if (from)
+		{
+			const CSE_InstanceRecord& own = *from->record;
+			part->set_condition(from->condition);
+			part->upgrades = from->upgrades;
+			part->props = own.self_props;
+			part->blob = own.self_blob;
+			part->paintjob = own.self_paintjob;
+			if (own.has_config_overrides() || !own.modifiers.empty())
+				Msg("~ [weapon parts] fit_part: [%s] has config overrides or modifiers of its own; a part doesn't keep them", section);
+			if (!r.graft(id, own))
+			{
+				Msg("! [weapon parts] fit_part: what [%s] holds doesn't fit in the record (a cap); nothing fitted", section);
+				return 0;
+			}
+		}
+		if (props && !apply_props(r, id, *props))
+			return 0;
+		if (!target.commit(r))
+			return 0;
+		if (from)
+			part_items::release(from->id);
+		return id;
+	}
+
+	// Placement props describe where a part sat on the gun; an item off the gun has none
+	static void strip_placement(InstanceProps& props)
+	{
+		for (auto it = props.begin(); it != props.end();)
+		{
+			if (weapon_parts::is_placement_prop(it->key.c_str()) && xr_strcmp(it->key, weapon_parts::PROP_VISUAL))
+				it = props.erase(it);
+			else
+				++it;
+		}
+	}
+
+	static bool loose_opt(const ::luabind::object& opts)
+	{
+		if (!opts.is_valid() || opts.type() != LUA_TTABLE)
+			return false;
+		::luabind::object v = opts["loose"];
+		return v.type() == LUA_TBOOLEAN && ::luabind::object_cast<bool>(v);
+	}
+
+	static ::luabind::object take_off(lua_State* L, const SHolder& target, u16 id, bool loose)
+	{
+		if (!target.valid())
+			return ::luabind::object();
+		const CSE_InstanceRecord before = target.record();
+		if (!before.find_part(id))
+		{
+			Msg("! [weapon parts] remove_part: %s has no part %u", target.name(), u32(id));
+			return ::luabind::object();
+		}
+
+		// What to spawn: the part with its contents inside, or each part of the subtree on its own
+		struct SSpawn
+		{
+			shared_str section;
+			float condition;
+			xr_vector<shared_str> upgrades;
+			CSE_InstanceRecord record;
+		};
+		xr_vector<SSpawn> spawns;
+		xr_vector<u16> ids;
+		before.subtree(id, ids);
+		for (u16 pid : ids)
+		{
+			if (!loose && pid != id)
+				break; // the contents travel inside the first item
+			const SInstancePart* p = before.find_part(pid);
+			SSpawn s;
+			s.section = p->section;
+			s.condition = p->condition_f();
+			s.upgrades = p->upgrades;
+			if (loose)
+			{
+				s.record.self_props = p->props;
+				s.record.self_blob = p->blob;
+				s.record.self_paintjob = p->paintjob;
+			}
+			else
+				before.extract(pid, s.record);
+			strip_placement(s.record.self_props);
+			if (!s.section.size())
+				continue; // a mount emptied on purpose: nothing to give back
+			if (!pSettings->section_exist(s.section))
+			{
+				Msg("! [weapon parts] remove_part: part %u has section [%s], which doesn't exist; it is dropped", u32(pid), s.section.c_str());
+				continue;
+			}
+			spawns.push_back(s);
+		}
+
+		// Commit the record first: if that fails nothing is spawned
+		CSE_InstanceRecord after = before;
+		after.remove_part(id);
+		if (!target.commit(after))
+			return ::luabind::object();
+
+		::luabind::object out = ::luabind::newtable(L);
+		int n = 1;
+		for (const SSpawn& s : spawns)
+		{
+			const u16 spawned = part_items::spawn(s.section.c_str(), target.owner(), target.id(), s.condition, s.upgrades, s.record);
+			if (spawned != u16(-1))
+				out[n++] = spawned;
+		}
+		return out;
+	}
+
+	// Game objects
+	u16 go_fit_part_item_props(CScriptGameObject* self, CScriptGameObject* item, u16 parent, LPCSTR mount, const ::luabind::object& props)
+	{
+		SSource s;
+		if (!source(item ? smart_cast<CInventoryItem*>(&item->object()) : nullptr, s))
+		{
+			Msg("! [weapon parts] fit_part: not an inventory item");
+			return 0;
+		}
+		return fit(holder(self), &s, s.section.c_str(), parent, mount, &props);
+	}
+
+	u16 go_fit_part_item(CScriptGameObject* self, CScriptGameObject* item, u16 parent, LPCSTR mount)
+	{
+		return go_fit_part_item_props(self, item, parent, mount, ::luabind::object());
+	}
+
+	u16 go_fit_part_section_props(CScriptGameObject* self, LPCSTR section, u16 parent, LPCSTR mount, const ::luabind::object& props)
+	{
+		return fit(holder(self), nullptr, section, parent, mount, &props);
+	}
+
+	u16 go_fit_part_section(CScriptGameObject* self, LPCSTR section, u16 parent, LPCSTR mount)
+	{
+		return fit(holder(self), nullptr, section, parent, mount, nullptr);
+	}
+
+	::luabind::object go_take_off_part_opts(lua_State* L, CScriptGameObject* self, u16 id, const ::luabind::object& opts)
+	{
+		return take_off(L, holder(self), id, loose_opt(opts));
+	}
+
+	::luabind::object go_take_off_part(lua_State* L, CScriptGameObject* self, u16 id)
+	{
+		return take_off(L, holder(self), id, false);
+	}
+
+	// Server entities (offline items; an online one goes through its object)
+	u16 se_fit_part_item_props(CSE_ALifeInventoryItem* self, CSE_ALifeInventoryItem* item, u16 parent, LPCSTR mount, const ::luabind::object& props)
+	{
+		SSource s;
+		if (!source(item, s))
+		{
+			Msg("! [weapon parts] fit_part: not an inventory item");
+			return 0;
+		}
+		return fit(holder(self), &s, s.section.c_str(), parent, mount, &props);
+	}
+
+	u16 se_fit_part_item(CSE_ALifeInventoryItem* self, CSE_ALifeInventoryItem* item, u16 parent, LPCSTR mount)
+	{
+		return se_fit_part_item_props(self, item, parent, mount, ::luabind::object());
+	}
+
+	u16 se_fit_part_section_props(CSE_ALifeInventoryItem* self, LPCSTR section, u16 parent, LPCSTR mount, const ::luabind::object& props)
+	{
+		return fit(holder(self), nullptr, section, parent, mount, &props);
+	}
+
+	u16 se_fit_part_section(CSE_ALifeInventoryItem* self, LPCSTR section, u16 parent, LPCSTR mount)
+	{
+		return fit(holder(self), nullptr, section, parent, mount, nullptr);
+	}
+
+	::luabind::object se_take_off_part_opts(lua_State* L, CSE_ALifeInventoryItem* self, u16 id, const ::luabind::object& opts)
+	{
+		return take_off(L, holder(self), id, loose_opt(opts));
+	}
+
+	::luabind::object se_take_off_part(lua_State* L, CSE_ALifeInventoryItem* self, u16 id)
+	{
+		return take_off(L, holder(self), id, false);
+	}
+
 	// ---- 4d place_parts hooks ---------------------------------------------
 
 	static xr_vector<int> s_place_parts; // registry references, in registration order
@@ -938,6 +1271,10 @@ void weapon_parts_registrator::script_register(lua_State* L)
 	lua_register(L, "model_bones", &lua_model_bones);
 	lua_register(L, "bone_bind_transform", &lua_bone_bind_transform);
 	lua_register(L, "weapon_bone_pose", &lua_weapon_bone_pose);
+	::luabind::module(L)[
+		::luabind::def("alife_inventory_item", &alife_inventory_item_obj),
+		::luabind::def("alife_inventory_item", &alife_inventory_item_id)
+	];
 	lua_register(L, "register_place_parts", &instance_record_script::lua_register_place_parts);
 	lua_register(L, "unregister_place_parts", &instance_record_script::lua_unregister_place_parts);
 }
